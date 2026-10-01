@@ -322,7 +322,7 @@ struct file_operations vfpga_ops = {
 };
 
 #define FPGA_CLASS_MODE ((umode_t)(S_IRUGO | S_IWUGO))
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 0, 0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)
 static char *fpga_class_devnode(const struct device *dev, umode_t *mode)
 #else
 static char *fpga_class_devnode(struct device *dev, umode_t *mode)
@@ -346,7 +346,7 @@ int alloc_vfpga_devices(struct bus_driver_data *data, dev_t dev) {
     dbg_info("vFPGA device regions allocated, major number %d\n", data->vfpga_major);
 
     // Create a class for the vFPGA devicse; initialized in the function setup_vfpga_device
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)        
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)        
         data->vfpga_class = class_create(data->vfpga_dev_name);   
     #else        
         data->vfpga_class = class_create(THIS_MODULE, data->vfpga_dev_name);    
@@ -634,7 +634,7 @@ int alloc_reconfig_device(struct bus_driver_data *data, dev_t device) {
     dbg_info("reconfig device regions allocated, major number %d\n", data->reconfig_major);
 
     // Create a class for the reconfiguration device; initialized in the function setup_reconfig_device
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)        
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 14, 0)        
         data->reconfig_class = class_create(data->reconfig_dev_name);    
     #else        
         data->reconfig_class = class_create(THIS_MODULE, data->reconfig_dev_name);  
