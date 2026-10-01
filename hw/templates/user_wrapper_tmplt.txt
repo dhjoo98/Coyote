@@ -1073,23 +1073,24 @@ module design_user_wrapper_{{ c_reg }} (
 	);
 
     //
-    // DEBUG
+    // DEBUG bridge removed — not used; S_BSCAN_tdo tied off.
     //
-    debug_bridge_user inst_debug_bridge_user (
-        .clk(dclk),
-        .S_BSCAN_bscanid_en(S_BSCAN_bscanid_en),
-        .S_BSCAN_capture(S_BSCAN_capture),
-        .S_BSCAN_drck(S_BSCAN_drck),
-        .S_BSCAN_reset(S_BSCAN_reset),
-        .S_BSCAN_runtest(S_BSCAN_runtest),
-        .S_BSCAN_sel(S_BSCAN_sel),
-        .S_BSCAN_shift(S_BSCAN_shift),
-        .S_BSCAN_tck(S_BSCAN_tck),
-        .S_BSCAN_tdi(S_BSCAN_tdi),
-        .S_BSCAN_tdo(S_BSCAN_tdo),
-        .S_BSCAN_tms(S_BSCAN_tms),
-        .S_BSCAN_update(S_BSCAN_update)
-    );
+    assign S_BSCAN_tdo = 1'b0;
+    //debug_bridge_user inst_debug_bridge_user (
+    //    .clk(dclk),
+    //    .S_BSCAN_bscanid_en(S_BSCAN_bscanid_en),
+    //    .S_BSCAN_capture(S_BSCAN_capture),
+    //    .S_BSCAN_drck(S_BSCAN_drck),
+    //    .S_BSCAN_reset(S_BSCAN_reset),
+    //    .S_BSCAN_runtest(S_BSCAN_runtest),
+    //    .S_BSCAN_sel(S_BSCAN_sel),
+    //    .S_BSCAN_shift(S_BSCAN_shift),
+    //    .S_BSCAN_tck(S_BSCAN_tck),
+    //    .S_BSCAN_tdi(S_BSCAN_tdi),
+    //    .S_BSCAN_tdo(S_BSCAN_tdo),
+    //    .S_BSCAN_tms(S_BSCAN_tms),
+    //    .S_BSCAN_update(S_BSCAN_update)
+    //);
 
 {% endif %}
 	
