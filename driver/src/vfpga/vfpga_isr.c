@@ -186,6 +186,8 @@ void vfpga_pfault_handler(struct work_struct *work) {
     }
 
     // Restart MMU and unlock mutex
+    wmb();                                                                                                                   
+    (void)device->fpga_lTlb[1];   // flush posted TLB writes before restart    
     restart_mmu(device, irq_pf->wr, irq_pf->ctid);
     mutex_unlock(&device->mmu_lock);
     dbg_info("page fault vFPGA %d handled\n", device->id);
