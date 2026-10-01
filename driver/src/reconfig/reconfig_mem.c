@@ -15,7 +15,7 @@
  * more details.
  *
  * The full GNU General Public License is included in this distribution in
- * the file called "COPYING". If not found, a copy of the GNU General Public  
+ * the file called "COPYING". If not found, a copy of the GNU General Public
  * License can be found <https://www.gnu.org/licenses/>.
  */
 
@@ -23,11 +23,11 @@
 
 // A map holding information about all the reconfiguration buffers allocated
 // Data-type of each entry is reconfig_buff_metadata (see coyote_dev.h)
-struct hlist_head reconfig_buffs_map[1 << (RECONFIG_HASH_TABLE_ORDER)]; 
+struct hlist_head reconfig_buffs_map[1 << (RECONFIG_HASH_TABLE_ORDER)];
 
 int alloc_reconfig_buffer(struct reconfig_dev *device, unsigned long n_pages, pid_t pid, uint32_t crid) {
     BUG_ON(!device);
-    
+
     // Reconfig buffers are first allocated, then mapped to user-space and finally, used to load the bitstream
     // Whenever buffers have been allocated and mapped, the variable n_pages is reset to 0
     // When different than zero, it means multiple allocations have occured but haven't been propagated to the user-space
@@ -45,7 +45,7 @@ int alloc_reconfig_buffer(struct reconfig_dev *device, unsigned long n_pages, pi
     else
         device->curr_buff.n_pages = n_pages;
 
-    // Allocate page pointer array; each entry is a pointer to a page allocated below (alloc_pages) 
+    // Allocate page pointer array; each entry is a pointer to a page allocated below (alloc_pages)
     device->curr_buff.pages = vmalloc(n_pages * sizeof(*device->curr_buff.pages));
     if (device->curr_buff.pages == NULL) {
         pr_warn("failed to allocate page pointer array for reconfig buffers");
@@ -55,8 +55,12 @@ int alloc_reconfig_buffer(struct reconfig_dev *device, unsigned long n_pages, pi
         "allocated %lu bytes for page pointer array for %ld n_pages of a reconfig buffer, ptr 0x%p\n",
         n_pages * sizeof(*device->curr_buff.pages), n_pages, device->curr_buff.pages
     );
-    
+
     // Allocate the physical pages for the buffer
+    // FIX: DMA mapping is deferred to mmap time (reconfig_dev_mmap) where dma_map_page() is used
+    // to obtain IOMMU-aware IOVAs. Mapping here with dma_map_single(page_to_virt(...)) is wrong
+    // under IOMMU because the IOVA space is established before the CPU fills the buffer, and
+    // page_to_virt() returns the kernel virtual address, not the correct IOVA.
     int i;
     for (i = 0; i < device->curr_buff.n_pages; i++) {
         device->curr_buff.pages[i] = alloc_pages(GFP_ATOMIC, device->bd_data->ltlb_meta->page_shift - PAGE_SHIFT);
@@ -77,7 +81,8 @@ fail_alloc:
         __free_pages(device->curr_buff.pages[--i], device->bd_data->ltlb_meta->page_shift - PAGE_SHIFT);
     }
     device->curr_buff.n_pages = 0;
-    
+    vfree(device->curr_buff.pages);
+
     spin_unlock(&device->mem_lock);
     return -ENOMEM;
 }
@@ -89,6 +94,23 @@ int free_reconfig_buffer(struct reconfig_dev *device, uint64_t vaddr, pid_t pid,
     struct reconfig_buff_metadata *tmp_buff;
     hash_for_each_possible(reconfig_buffs_map, tmp_buff, entry, vaddr) {
         if (tmp_buff->vaddr == vaddr && tmp_buff->pid == pid && tmp_buff->crid == crid) {
+
+            // FIX: DMA-unmap pages before freeing them.
+            // These were mapped in reconfig_dev_mmap() via dma_map_page() to obtain IOMMU-aware
+            // addresses. They must be unmapped here to release the IOMMU mapping and avoid leaks.
+            uint64_t page_size = device->bd_data->ltlb_meta->page_size;
+            if (tmp_buff->dma_addrs) {
+                for (int i = 0; i < tmp_buff->n_pages; i++) {
+                    dma_unmap_page(
+                        &device->bd_data->pci_dev->dev,
+                        tmp_buff->dma_addrs[i],
+                        page_size,
+                        DMA_TO_DEVICE
+                    );
+                }
+                vfree(tmp_buff->dma_addrs);
+            }
+
             for (int i = 0; i < tmp_buff->n_pages; i++) {
                 if (tmp_buff->pages[i]) {
                     __free_pages(tmp_buff->pages[i], device->bd_data->ltlb_meta->page_shift - PAGE_SHIFT);

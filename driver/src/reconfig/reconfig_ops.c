@@ -15,7 +15,7 @@
  * more details.
  *
  * The full GNU General Public License is included in this distribution in
- * the file called "COPYING". If not found, a copy of the GNU General Public  
+ * the file called "COPYING". If not found, a copy of the GNU General Public
  * License can be found <https://www.gnu.org/licenses/>.
  */
 
@@ -35,7 +35,7 @@ int reconfig_dev_open(struct inode *inode, struct file *file) {
         return 1;
     #endif
 
-    dbg_info("reconfiguration device %d acquired, pid %d\n", minor, current->pid);    
+    dbg_info("reconfiguration device %d acquired, pid %d\n", minor, current->pid);
     return 0;
 }
 
@@ -109,7 +109,7 @@ long reconfig_dev_ioctl(struct file *file, unsigned int command, unsigned long a
 
                 // Clean up current shell state
                 shell_pci_remove(bus_data);
-                
+
                 // Decouple
                 bus_data->stat_cnfg->reconfig_dcpl_set = 0x1;
 
@@ -135,10 +135,9 @@ long reconfig_dev_ioctl(struct file *file, unsigned int command, unsigned long a
 
                 uint64_t stop_time = ktime_get_ns();
                 dbg_info("shell reconfiguration time %llu ms\n", (stop_time - start_time) / (1000 * 1000));
-                
             }
             break;
-        
+
         // Reconfigure app
         // Args: virtual address, buffer length, host PID, configuration ID (crid), vFPGA ID
         case IOCTL_RECONFIGURE_APP:
@@ -147,12 +146,32 @@ long reconfig_dev_ioctl(struct file *file, unsigned int command, unsigned long a
                 pr_warn("user data could not be coppied, return %d\n", ret_val);
             } else {
                 dbg_info("trying to obtain reconfig lock, pid %d\n", current->pid);
-                
+
                 // Lock mutex, to avoid multiple reconfigurations at the same time
                 mutex_lock(&device->rcnfg_lock);
 
                 // Decouple
                 bus_data->shell_cnfg->reconfig_dcpl_app_set = (1 << (uint32_t) tmp[4]);
+
+                // Diagnostic snapshot of BPSS AXI-level counters before PR.
+                // NOTE: these are AXI handshake counts (user-logic ↔ BPSS), NOT PCIe completion
+                // counts. After large HBM loads the H2C delta stays non-zero permanently because
+                // the HBM load path does not send per-transfer completions back through BPSS.
+                // The design has been verified to complete HBM offloads correctly in the static
+                // shell, so we log only and do not poll/wait.
+                dbg_info("pre-PR BPSS stats: ch0 h2c req=%u cmpl=%u (delta=%d), c2h req=%u cmpl=%u (delta=%d) | ch1 h2c req=%u cmpl=%u (delta=%d), c2h req=%u cmpl=%u (delta=%d)\n",
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[0]),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[1]),
+                         (int)((uint32_t)(bus_data->shell_cnfg->hdma_debug[0]) - (uint32_t)(bus_data->shell_cnfg->hdma_debug[1])),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[0] >> 32),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[1] >> 32),
+                         (int)((uint32_t)(bus_data->shell_cnfg->hdma_debug[0] >> 32) - (uint32_t)(bus_data->shell_cnfg->hdma_debug[1] >> 32)),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[3]),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[4]),
+                         (int)((uint32_t)(bus_data->shell_cnfg->hdma_debug[3]) - (uint32_t)(bus_data->shell_cnfg->hdma_debug[4])),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[3] >> 32),
+                         (uint32_t)(bus_data->shell_cnfg->hdma_debug[4] >> 32),
+                         (int)((uint32_t)(bus_data->shell_cnfg->hdma_debug[3] >> 32) - (uint32_t)(bus_data->shell_cnfg->hdma_debug[4] >> 32)));
 
                 // Reconfigure and wait until completion
                 uint64_t start_time = ktime_get_ns();
@@ -169,7 +188,7 @@ long reconfig_dev_ioctl(struct file *file, unsigned int command, unsigned long a
 
                 // Couple and unlock mutex
                 dbg_info("app reconfiguration complete, coupling the design and unlocking mutex\n");
-                bus_data->shell_cnfg->reconfig_dcpl_app_clr = (1 << (uint32_t)tmp[3]);
+                bus_data->shell_cnfg->reconfig_dcpl_app_clr = (1 << (uint32_t)tmp[4]);
                 mutex_unlock(&device->rcnfg_lock);
             }
             break;
@@ -198,7 +217,7 @@ long reconfig_dev_ioctl(struct file *file, unsigned int command, unsigned long a
             }
             break;
 
-        default: 
+        default:
             dbg_info("reconfig device received unknown IOCTL call %d", command);
             ret_val = 1;
             break;
@@ -223,7 +242,7 @@ int reconfig_dev_mmap(struct file *file, struct vm_area_struct *vma) {
         // Align virtual address (vma->vm_start) to page boundary
         uint64_t vaddr = ((vma->vm_start + page_size - 1) >> page_shift) << page_shift;
 
-        // Check pages have been allocated and the current process was the one that allocated them 
+        // Check pages have been allocated and the current process was the one that allocated them
         if (device->curr_buff.n_pages != 0 && device->curr_buff.pid == current->pid) {
             spin_lock(&device->mem_lock);
 
@@ -235,13 +254,50 @@ int reconfig_dev_mmap(struct file *file, struct vm_area_struct *vma) {
             new_buff->crid = device->curr_buff.crid;
             new_buff->n_pages = device->curr_buff.n_pages;
             new_buff->pages = device->curr_buff.pages;
+
+            // FIX: DMA-map each page to obtain an IOMMU-aware address (IOVA).
+            // page_to_phys() returns the CPU physical address, which is incorrect when an IOMMU
+            // (e.g., AMD-Vi) is active. The FPGA DMA engine must use the IOVA returned by
+            // dma_map_page() so that transactions are correctly translated by the IOMMU.
+            // This mirrors the approach already used in vfpga_gup.c for user data buffers.
+            // DMA mapping is done here (at mmap time) rather than at alloc time so that
+            // the mapping reflects the correct IOVA range after the DMA mask has been set.
+            new_buff->dma_addrs = vmalloc(new_buff->n_pages * sizeof(dma_addr_t));
+            if (!new_buff->dma_addrs) {
+                pr_warn("failed to allocate DMA address array for reconfig buffer\n");
+                kfree(new_buff);
+                spin_unlock(&device->mem_lock);
+                return -ENOMEM;
+            }
+
+            for (int i = 0; i < new_buff->n_pages; i++) {
+                new_buff->dma_addrs[i] = dma_map_page(
+                    &device->bd_data->pci_dev->dev,
+                    new_buff->pages[i],
+                    0,
+                    page_size,
+                    DMA_TO_DEVICE
+                );
+                if (dma_mapping_error(&device->bd_data->pci_dev->dev, new_buff->dma_addrs[i])) {
+                    pr_warn("failed to DMA-map reconfig page %d\n", i);
+                    for (int j = 0; j < i; j++) {
+                        dma_unmap_page(&device->bd_data->pci_dev->dev,
+                                       new_buff->dma_addrs[j], page_size, DMA_TO_DEVICE);
+                    }
+                    vfree(new_buff->dma_addrs);
+                    kfree(new_buff);
+                    spin_unlock(&device->mem_lock);
+                    return -EIO;
+                }
+            }
+
             hash_add(reconfig_buffs_map, &new_buff->entry, vaddr);
-            
+
             // Remap each page to user-space
             uint64_t virtual_address_tmp = vaddr;
             for (int i = 0; i < new_buff->n_pages; i++) {
                 if (remap_pfn_range(
-                        vma, virtual_address_tmp, 
+                        vma, virtual_address_tmp,
                         page_to_pfn(device->curr_buff.pages[i]), page_size, vma->vm_page_prot)
                     ) {
                         pr_warn("failed to remap, virtual address 0x%llx\n", virtual_address_tmp);
@@ -250,7 +306,7 @@ int reconfig_dev_mmap(struct file *file, struct vm_area_struct *vma) {
                 virtual_address_tmp += page_size;
             }
 
-            // Mark current buff as empty, to allo future mmaps (see first if in this function)
+            // Mark current buff as empty, to allow future mmaps (see first if in this function)
             device->curr_buff.n_pages = 0;
 
             spin_unlock(&device->mem_lock);

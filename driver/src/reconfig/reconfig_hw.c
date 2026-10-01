@@ -15,7 +15,7 @@
  * more details.
  *
  * The full GNU General Public License is included in this distribution in
- * the file called "COPYING". If not found, a copy of the GNU General Public  
+ * the file called "COPYING". If not found, a copy of the GNU General Public
  * License can be found <https://www.gnu.org/licenses/>.
  */
 
@@ -35,48 +35,61 @@ int reconfigure_start(struct reconfig_dev *device, uint64_t vaddr, uint64_t len,
     struct reconfig_buff_metadata *tmp_buff;
     hash_for_each_possible(reconfig_buffs_map, tmp_buff, entry, vaddr) {
         if (tmp_buff->vaddr == vaddr && tmp_buff->pid == pid && tmp_buff->crid == crid) {
-            // Bitsreams are always loaded to FPGA memory in buffers of hugepages
+            // Bitstreams are always loaded to FPGA memory in buffers of hugepages
             uint64_t bitstream_page_size = bus_data->ltlb_meta->page_size;
 
             uint64_t n_bistream_full_pages = len / bitstream_page_size;
             uint64_t partial_bitsream_size = len % bitstream_page_size;
             dbg_info(
-                "reconfig bitstream: full pages %lld (hugepages), partial %lld B\n", 
+                "reconfig bitstream: full pages %lld (hugepages), partial %lld B\n",
                 n_bistream_full_pages, partial_bitsream_size
             );
 
             // Write full pages, sequentially; but make sure not to over-saturate with writes (cmd_sent)
             for (int i = 0; i < n_bistream_full_pages; i++) {
-                while(cmd_sent >= RECONFIG_THRESHOLD) {
+                while (cmd_sent >= RECONFIG_THRESHOLD) {
                     cmd_sent = bus_data->stat_cnfg->reconfig_ctrl;
                     usleep_range(RECONFIG_MIN_SLEEP_CMD, RECONFIG_MAX_SLEEP_CMD);
                 }
 
-                bus_data->stat_cnfg->reconfig_addr_low = LOW_32(page_to_phys(tmp_buff->pages[i]));
-                bus_data->stat_cnfg->reconfig_addr_high = HIGH_32(page_to_phys(tmp_buff->pages[i]));
+                // FIX: use IOMMU-aware DMA address (dma_addrs[i]) instead of hpages[i].
+                // hpages[i] held the physical address from dma_map_single(page_to_virt(...)),
+                // which is incorrect under IOMMU (e.g., AMD-Vi). dma_addrs[i] holds the IOVA
+                // obtained via dma_map_page() in reconfig_dev_mmap(), which is the address
+                // the FPGA DMA engine must use for correct IOMMU translation.
+                dbg_info("PR DMA page %d: iova=0x%llx phys=0x%llx\n",
+                         i, (uint64_t)tmp_buff->dma_addrs[i],
+                         (uint64_t)page_to_phys(tmp_buff->pages[i]));
+                bus_data->stat_cnfg->reconfig_addr_low = LOW_32(tmp_buff->dma_addrs[i]);
+                bus_data->stat_cnfg->reconfig_addr_high = HIGH_32(tmp_buff->dma_addrs[i]);
                 bus_data->stat_cnfg->reconfig_len = bitstream_page_size;
                 if (partial_bitsream_size == 0 && i == n_bistream_full_pages - 1)
                     bus_data->stat_cnfg->reconfig_ctrl = RECONFIG_CTRL_START_LAST;
                 else
                     bus_data->stat_cnfg->reconfig_ctrl = RECONFIG_CTRL_START_MIDDLE;
 
-                // write memory barrier; ensuring writes remain in-order and not changed by compiler, processor etc.
+                // write memory barrier; ensuring writes remain in-order and not reordered by compiler/processor
                 wmb();
                 cmd_sent++;
             }
 
             // Write the last partial page
             if (partial_bitsream_size > 0) {
-                while(cmd_sent >= RECONFIG_THRESHOLD) {
+                while (cmd_sent >= RECONFIG_THRESHOLD) {
                     cmd_sent = bus_data->stat_cnfg->reconfig_ctrl;
                     usleep_range(RECONFIG_MIN_SLEEP_CMD, RECONFIG_MAX_SLEEP_CMD);
                 }
 
-                bus_data->stat_cnfg->reconfig_addr_low = LOW_32(page_to_phys(tmp_buff->pages[n_bistream_full_pages]));
-                bus_data->stat_cnfg->reconfig_addr_high = HIGH_32(page_to_phys(tmp_buff->pages[n_bistream_full_pages]));
+                // FIX: same as above — use dma_addrs instead of hpages
+                dbg_info("PR DMA page %lld (partial, %lld B): iova=0x%llx phys=0x%llx\n",
+                         n_bistream_full_pages, partial_bitsream_size,
+                         (uint64_t)tmp_buff->dma_addrs[n_bistream_full_pages],
+                         (uint64_t)page_to_phys(tmp_buff->pages[n_bistream_full_pages]));
+                bus_data->stat_cnfg->reconfig_addr_low = LOW_32(tmp_buff->dma_addrs[n_bistream_full_pages]);
+                bus_data->stat_cnfg->reconfig_addr_high = HIGH_32(tmp_buff->dma_addrs[n_bistream_full_pages]);
                 bus_data->stat_cnfg->reconfig_len = partial_bitsream_size;
                 bus_data->stat_cnfg->reconfig_ctrl = RECONFIG_CTRL_START_LAST;
-                
+
                 wmb();
                 cmd_sent++;
             }
