@@ -87,13 +87,13 @@ void create_tlb_mapping(
     uint64_t physical_address_masked = (physical_address >> tlb_meta->page_shift) & tlb_meta->phy_mask;
 
     // Create new entry
-    uint64_t entry [2];
-    entry[0] |= physical_address_masked | ((uint64_t) hpid << 32);
-    entry[1] |= key | (tag                          << (tlb_meta->key_size)) 
-                    | ((uint64_t) ctid              << (tlb_meta->key_size + tlb_meta->tag_size))
-                    | ((uint64_t) host              << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE))
-                    | (1UL                          << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE))
-                    | (physical_address_masked      << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE + 1));
+    uint64_t entry[2] = {0, 0};
+    entry[0] = physical_address_masked | ((uint64_t) hpid << 32);
+    entry[1] = key | (tag                          << (tlb_meta->key_size))
+                   | ((uint64_t) ctid              << (tlb_meta->key_size + tlb_meta->tag_size))
+                   | ((uint64_t) host              << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE))
+                   | (1UL                          << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE))
+                   | (physical_address_masked      << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE + 1));
 
     dbg_info(
         "creating new TLB entry: virtual address %llx, physical address %llx, stream %d, ctid %d, hpid %d, hugepage %d\n", 
@@ -116,10 +116,10 @@ void create_tlb_unmapping(struct vfpga_dev *device, struct tlb_metadata *tlb_met
     uint64_t tag = (vaddr >> (tlb_meta->page_shift - PAGE_SHIFT)) >> tlb_meta->key_size;
 
     // Invalidate entry, by setting field to zero
-    uint64_t entry [2];
-    entry[0] |= ((uint64_t) hpid << 32);
-    entry[1] |= key | (tag << (tlb_meta->key_size)) 
-                    | (0UL << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE));
+    uint64_t entry[2] = {0, 0};
+    entry[0] = ((uint64_t) hpid << 32);
+    entry[1] = key | (tag << (tlb_meta->key_size))
+                   | (0UL << (tlb_meta->key_size + tlb_meta->tag_size + PID_SIZE + STRM_SIZE));
 
     dbg_info("unmapping TLB entry: virtual address %llx, hpid %d, hugepage %d\n", vaddr, hpid, tlb_meta->hugepage);
 
@@ -207,12 +207,12 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
     int32_t target_block = mem_block;
     if (target_block == -1) {
         for (int i = 0; i < N_MEM_BLOCKS; i++) {
-            if (huge && (bus_data->card_lblocks[i].free_chunks > n_pages)) {
+            if (huge && (bus_data->card_lblocks[i].free_chunks >= n_pages)) {
                 target_block = i;
                 break;
             }
 
-            if (!huge && (bus_data->card_sblocks[i].free_chunks > n_pages)) {
+            if (!huge && (bus_data->card_sblocks[i].free_chunks >= n_pages)) {
                 target_block = i;
                 break;
             }
@@ -230,11 +230,15 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         // Check sufficient space is available 
         if (bus_data->card_lblocks[target_block].free_chunks < n_pages) {
             pr_warn("insufficient memory on card to store buffer\n");
+            spin_unlock(&bus_data->card_lock);
             return -ENOMEM;
         }
 
         // Obtain the next available physical address, mark it as used and update the card_physical_address list with this page
         for (int i = 0; i < n_pages; i++) {
+            while (bus_data->card_lblocks[target_block].alloc->used)
+                bus_data->card_lblocks[target_block].alloc = bus_data->card_lblocks[target_block].alloc->next;
+
             card_physical_address[i] = (bus_data->card_lblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_huge_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
 
             bus_data->card_lblocks[target_block].free_chunks--;
@@ -245,11 +249,15 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         // Check sufficient space in card memory is available 
         if (bus_data->card_sblocks[target_block].free_chunks < n_pages) {
             pr_warn("insufficient memory on card to store buffer\n");
+            spin_unlock(&bus_data->card_lock);
             return -ENOMEM;
         }
 
         // Obtain the next available physical address, mark it as used and update the card_physical_address list with this page
         for (int i = 0; i < n_pages; i++) {
+            while (bus_data->card_sblocks[target_block].alloc->used)
+                bus_data->card_sblocks[target_block].alloc = bus_data->card_sblocks[target_block].alloc->next;
+
             card_physical_address[i] = (bus_data->card_sblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_reg_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
 
             bus_data->card_sblocks[target_block].free_chunks--;
