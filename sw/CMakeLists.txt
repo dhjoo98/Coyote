@@ -117,11 +117,17 @@ project(
 # Specify C++ standard, compile time options
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
-add_compile_options("-march=native")
+add_compile_options("-march=x86-64-v3")
 
 # Source files, includes
 file(GLOB CYT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
-add_library(Coyote SHARED ${CYT_SOURCES})
+add_library(Coyote STATIC ${CYT_SOURCES})
+
+#for verbose debug
+#target_compile_definitions(Coyote PUBLIC VERBOSE_DEBUG_1)
+#target_compile_definitions(Coyote PUBLIC VERBOSE_DEBUG_2)
+
+
 target_include_directories(Coyote
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
