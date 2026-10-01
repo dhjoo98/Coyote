@@ -617,9 +617,16 @@ int pci_probe(struct pci_dev *pdev, const struct pci_device_id *id) {
 
     // DMA addressing
     dbg_info("sizeof(dma_addr_t) == %ld\n", sizeof(dma_addr_t));
-    ret_val = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+    //ret_val = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
+    // PR_DMA_ADDR_BITS=40: the static-layer PR DMA controller only wires bits 39:0 of
+    // reconfig_addr_high/low into its PCIe read requests; bits 43:40 are silently
+    // dropped.  Constraining the IOVA allocator to 40 bits ensures that all bitstream
+    // page IOVAs (and all other device DMA) remain in the range the PR controller can
+    // address.  BPSS / TLB operations are unaffected — they support up to TLB_PADDR_RANGE
+    // (44) bits, and 40-bit IOVAs are a valid subset.
+    ret_val = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(40));
     if (ret_val) {
-        dev_err(&pdev->dev, "failed to set 64b DMA mask\n");
+        dev_err(&pdev->dev, "failed to set 40b DMA mask\n");
         goto err_mask;
     }
 
