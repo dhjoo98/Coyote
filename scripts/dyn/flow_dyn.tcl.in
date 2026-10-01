@@ -72,35 +72,49 @@ append cmd " } -part $part -top cyt_top"
 eval $cmd
 write_checkpoint -force "$dcp_dir/config_0/shell_linked_c0.dcp"
 
+# Per-config SLR placement hints (USER_SLR_ASSIGNMENT, no pblock creation).
+# Must be applied AFTER link_design so user cells exist in the netlist.
+# Convention: place a file named <fplan_basename>_slr_hints.xdc alongside
+# the FPLAN_PATH file (e.g. ryloth_pr_fplan_u55c_slr_hints.xdc).
+# Safe to reload every config — set_property is idempotent, foreach on
+# an empty get_cells list is a no-op.
+if {$cfg(fplan_path) != "0"} {
+    set slr_hints "[file rootname $cfg(fplan_path)]_slr_hints.xdc"
+    if {[file exists $slr_hints]} {
+        read_xdc -cells inst_shell/inst_dynamic $slr_hints
+    }
+}
+
 # Compilation
-if {$cfg(build_opt) eq 1} {
+if {$cfg(build_opt_user) eq 1} {
     opt_design -directive Explore
 } else {
     opt_design
 }
 write_checkpoint -force "$dcp_dir/config_0/shell_opted_c0.dcp"
 
-if {$cfg(build_opt) eq 1} {
+if {$cfg(build_opt_user) eq 1} {
     place_design -directive Auto_1
+    #place_design -directive AltSpreadLogic_high
 } else {
     place_design
 }
 write_checkpoint -force "$dcp_dir/config_0/shell_placed_c0.dcp"
 
-if {$cfg(build_opt) eq 1} {
+if {$cfg(build_opt_user) eq 1} {
     phys_opt_design -directive AggressiveExplore
 } else {
     phys_opt_design
 }
 write_checkpoint -force "$dcp_dir/config_0/shell_phys_opted_c0.dcp"
 
-if {$cfg(build_opt) eq 1} {
+if {$cfg(build_opt_user) eq 1} {
     route_design -directive AggressiveExplore
 } else {
     route_design
 }
 
-if {$cfg(build_opt) eq 1} {
+if {$cfg(build_opt_user) eq 1} {
     phys_opt_design -directive AggressiveExplore
 }
 
@@ -151,35 +165,48 @@ for {set i 1}  {$i < $cfg(n_config)} {incr i} {
     eval $cmd
     write_checkpoint -force "$dcp_dir/config_$i/shell_linked_c$i.dcp"
 
+    # Per-config SLR placement hints (USER_SLR_ASSIGNMENT, no pblock creation).
+    # Must be applied AFTER link_design so user cells exist in the netlist.
+    # Convention: place a file named <fplan_basename>_slr_hints.xdc alongside
+    # the FPLAN_PATH file (e.g. ryloth_pr_fplan_u55c_slr_hints.xdc).
+    # Safe to reload every config — set_property is idempotent, foreach on
+    # an empty get_cells list is a no-op.
+    if {$cfg(fplan_path) != "0"} {
+        set slr_hints "[file rootname $cfg(fplan_path)]_slr_hints.xdc"
+        if {[file exists $slr_hints]} {
+            read_xdc -cells inst_shell/inst_dynamic $slr_hints
+        }
+    }
+
     # Compilation
-    if {$cfg(build_opt) eq 1} {
+    if {$cfg(build_opt_user) eq 1} {
         opt_design -directive Explore
     } else {
         opt_design
     }
     write_checkpoint -force "$dcp_dir/config_$i/shell_opted_c$i.dcp"
 
-    if {$cfg(build_opt) eq 1} {
+    if {$cfg(build_opt_user) eq 1} {
         place_design -directive Auto_1
     } else {
         place_design
     }
     write_checkpoint -force "$dcp_dir/config_$i/shell_placed_c$i.dcp"
 
-    if {$cfg(build_opt) eq 1} {
+    if {$cfg(build_opt_user) eq 1} {
         phys_opt_design -directive AggressiveExplore
     } else {
         phys_opt_design
     }
     write_checkpoint -force "$dcp_dir/config_$i/shell_phys_opted_c$i.dcp"
 
-    if {$cfg(build_opt) eq 1} {
+    if {$cfg(build_opt_user) eq 1} {
         route_design -directive AggressiveExplore
     } else {
         route_design
     }
 
-    if {$cfg(build_opt) eq 1} {
+    if {$cfg(build_opt_user) eq 1} {
         phys_opt_design -directive AggressiveExplore
     }
 
