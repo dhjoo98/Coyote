@@ -337,9 +337,13 @@ extern bool en_hmm;
 #ifdef PLATFORM_ULTRASCALE_PLUS
     #define N_MEM_BLOCKS 1
     #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
-    #define MEM_START (256UL * 1024UL * 1024UL)
-    #define N_SMALL_CHUNKS (1024UL * 1024UL)
-    #define N_LARGE_CHUNKS (1024UL * 1024UL)
+    #define MEM_START (256UL * 1024UL * 1024UL) //start address 256MB, 0-256MB segment is for shell.
+    //regular pages are 4KB in size.
+    #define N_SMALL_CHUNKS (98304UL)                  // 384 MiB (halved from 768 MiB to expand large-page pool)
+    //#define N_SMALL_CHUNKS (1024UL * 1024UL)
+    // huge pages are 2MB in size.
+    #define N_LARGE_CHUNKS (4030464UL)                // 15.375 GiB (expanded from 15 GiB; total budget preserved)
+    //#define N_LARGE_CHUNKS (1024UL * 1024UL)
 #endif
 
 // On Versal devices, users have fine-grained control over the HBM bank 
@@ -365,6 +369,10 @@ extern bool en_hmm;
 #define RECONFIG_CTRL_IRQ_CLR_PENDING 0x4
 
 #define MAX_RECONFIG_BUFF_NUM 128
+
+// Use 2 MB "hugepages" for reconfiguration buffers
+#define RECONFIG_BUFF_PAGE_SHIFT 21  
+#define RECONFIG_BUFF_PAGE_SIZE (1UL << RECONFIG_BUFF_PAGE_SHIFT)
 
 // IRQ types, in order of imporance; see vfpga_isr.c for more details
 #define IRQ_DMA_OFFL 0
@@ -803,6 +811,14 @@ struct reconfig_buff_metadata {
 
     /// The actual pages holding the buffer
     struct page **pages;
+
+    /// Array of physical addresses on the host, one for each page in the pages array
+    uint64_t *hpages;
+
+    /// IOMMU-aware DMA addresses for each page, obtained via dma_map_page().
+    /// Used by reconfigure_start() instead of page_to_phys() to support systems
+    /// with IOMMU enabled (e.g., AMD-Vi). Populated during mmap, freed during buffer release.
+    dma_addr_t *dma_addrs;
 };
 
 /**
