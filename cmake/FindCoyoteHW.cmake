@@ -219,6 +219,14 @@ set(COMP_CORES 8 CACHE STRING "Number of compilation cores")
 # Run implementation with optimization, can help close timing but significantly longer compilation time
 set(BUILD_OPT 0 CACHE STRING "Build optimizations (significantly longer compilation times)")
 
+# Per-stage build optimization overrides (fall back to BUILD_OPT if not set by the project)
+if(NOT DEFINED BUILD_OPT_SHELL)
+    set(BUILD_OPT_SHELL ${BUILD_OPT})
+endif()
+if(NOT DEFINED BUILD_OPT_USER)
+    set(BUILD_OPT_USER ${BUILD_OPT})
+endif()
+
 ##
 ## DESIGN CHECKPOINTS
 ##
