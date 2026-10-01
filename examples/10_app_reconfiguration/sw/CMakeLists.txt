@@ -59,5 +59,6 @@ add_executable(${EXEC} ${TARGET_DIR}/main.cpp)
 
 target_link_libraries(${EXEC} PUBLIC Coyote)
 
+set(Boost_USE_STATIC_LIBS ON)
 find_package(Boost REQUIRED COMPONENTS program_options)
 target_link_libraries(${EXEC} PUBLIC Boost::program_options)

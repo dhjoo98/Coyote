@@ -37,7 +37,7 @@ endif()
 option(EN_SIM "Enable simulation mode for Coyote" OFF)
 
 if(EN_SIM)
-    add_subdirectory(../../../sim/sw ${CMAKE_BINARY_DIR}/coyote)
+	add_subdirectory(../../../sim/sw ${CMAKE_BINARY_DIR}/coyote)
 else()
     add_subdirectory(../../../sw ${CMAKE_BINARY_DIR}/coyote)
 endif()
@@ -49,7 +49,11 @@ set(TARGET_DIR "${CMAKE_SOURCE_DIR}/src/")
 set(EXEC test)
 add_executable(${EXEC} ${TARGET_DIR}/main.cpp)
 
+target_compile_definitions(${EXEC} PRIVATE VERBOSE_DEBUG_1)
+target_compile_definitions(${EXEC} PRIVATE VERBOSE_DEBUG_2)
+
 target_link_libraries(${EXEC} PUBLIC Coyote)
 
+set(Boost_USE_STATIC_LIBS ON)
 find_package(Boost REQUIRED COMPONENTS program_options)
 target_link_libraries(${EXEC} PUBLIC Boost::program_options)
