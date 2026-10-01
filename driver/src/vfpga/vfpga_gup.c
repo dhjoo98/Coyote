@@ -581,8 +581,10 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
             // Release memory to hold physical addresses
             vfree(tmp_entry->hpages);
 
-            // Remove from map
+            // Remove from map and free the struct
             hash_del(&tmp_entry->entry);
+            kfree(tmp_entry);
+            break;
         }
     }
 
@@ -591,13 +593,14 @@ int tlb_put_user_pages(struct vfpga_dev *device, uint64_t vaddr, int32_t ctid, p
 
 int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, int dirtied) {
     int i, bkt;
+    struct hlist_node *tmp;
     struct user_pages *tmp_entry;
 
     BUG_ON(!device);
     struct bus_driver_data *bd_data = device->bd_data;
     BUG_ON(!bd_data);
 
-    hash_for_each(user_buff_map[device->id][ctid], bkt, tmp_entry, entry) {
+    hash_for_each_safe(user_buff_map[device->id][ctid], bkt, tmp, tmp_entry, entry) {
         // Unmap from TLB
         tlb_unmap_gup(device, tmp_entry, hpid);
         
@@ -655,8 +658,9 @@ int tlb_put_user_pages_ctid(struct vfpga_dev *device, int32_t ctid, pid_t hpid, 
         // Release memory to hold physical addresses
         vfree(tmp_entry->hpages);
 
-        // Remove from map
+        // Remove from map and free the struct
         hash_del(&tmp_entry->entry);
+        kfree(tmp_entry);
     }
 
     return 0;
