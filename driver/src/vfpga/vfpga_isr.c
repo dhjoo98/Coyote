@@ -133,7 +133,7 @@ void vfpga_notify_handler(struct work_struct *work) {
 
     // Write the notification value to the eventfd; the value is polled on in the user-space (see bThread.cpp)
     
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0)
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 8, 0) || COYOTE_RHEL_AT_LEAST(9, 6)
         // In recent kernel versions, the function signature of eventfd_signal changed.
         // The function is now a void and automatically increments the eventfd
         // counter by 1 instead of by a provided value.

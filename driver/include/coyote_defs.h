@@ -51,6 +51,16 @@
 #include <linux/sched/mm.h>
 #include <linux/highmem.h>
 #include <linux/version.h>
+
+// RHEL kernels backport newer upstream APIs without moving LINUX_VERSION_CODE (always 5.14 on RHEL 9),
+// so guards on KERNEL_VERSION alone select the wrong signature there. RHEL exports its own release code
+// in <linux/version.h>; this helper evaluates to 0 on non-RHEL kernels so the KERNEL_VERSION guards
+// still decide. RHEL 9.6 carries the 6.5 pin_user_pages_remote() and 6.8 eventfd_signal() signatures.
+#if defined(RHEL_RELEASE_CODE) && defined(RHEL_RELEASE_VERSION)
+    #define COYOTE_RHEL_AT_LEAST(major, minor) (RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(major, minor))
+#else
+    #define COYOTE_RHEL_AT_LEAST(major, minor) 0
+#endif
 #include <linux/slab.h>
 #include <linux/ioctl.h>
 #include <linux/compiler.h>
