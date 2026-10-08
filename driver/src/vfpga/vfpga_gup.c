@@ -297,7 +297,7 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
     // Pin the pages
     // On newer kernels, pin_user_pages_remote is preferred over get_user_pages_remote for DMA,
     // as it guarantees that the pages remain pinned (and not just the page struct) until explicitly unpinned
-    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0)
+    #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 5, 0) || COYOTE_RHEL_AT_LEAST(9, 6)
         ret_val = pin_user_pages_remote(curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL);
     #elif LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 0)
         ret_val = pin_user_pages_remote(curr_mm, (unsigned long) pf_desc->vaddr << PAGE_SHIFT, pf_desc->n_pages, FOLL_WRITE | FOLL_LONGTERM, user_pg->pages, NULL, NULL);
