@@ -239,7 +239,7 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
             while (bus_data->card_lblocks[target_block].alloc->used)
                 bus_data->card_lblocks[target_block].alloc = bus_data->card_lblocks[target_block].alloc->next;
 
-            card_physical_address[i] = (bus_data->card_lblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_huge_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
+            card_physical_address[i] = ((uint64_t) bus_data->card_lblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_huge_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
 
             bus_data->card_lblocks[target_block].free_chunks--;
             bus_data->card_lblocks[target_block].alloc->used = true;
@@ -258,7 +258,7 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
             while (bus_data->card_sblocks[target_block].alloc->used)
                 bus_data->card_sblocks[target_block].alloc = bus_data->card_sblocks[target_block].alloc->next;
 
-            card_physical_address[i] = (bus_data->card_sblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_reg_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
+            card_physical_address[i] = ((uint64_t) bus_data->card_sblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_reg_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
 
             bus_data->card_sblocks[target_block].free_chunks--;
             bus_data->card_sblocks[target_block].alloc->used = true;
