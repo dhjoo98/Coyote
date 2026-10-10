@@ -21,6 +21,14 @@
 
 #include "vfpga_isr.h"
 
+// Ryloth: number of 2 MiB pages mapped past the faulting one on each card
+// TLB miss (0 = map only the reported range, the stock behaviour).
+// Set with insmod ... pf_map_ahead=7 or at runtime through
+// /sys/module/coyote_driver/parameters/pf_map_ahead.
+static unsigned int pf_map_ahead = 0;
+module_param(pf_map_ahead, uint, 0644);
+MODULE_PARM_DESC(pf_map_ahead, "2 MiB pages mapped ahead on each card TLB miss (0 = off)");
+
 irqreturn_t vfpga_isr(int irq, void *d) {
     dbg_info("(irq=%d) ISR entry\n", irq);
     struct vfpga_dev *device = (struct vfpga_dev *) d;
@@ -176,7 +184,18 @@ void vfpga_pfault_handler(struct work_struct *work) {
         // Alternative memory management, via the get_user_pages mechanism (default)
         // Target block doesn't matter for page faults - when a page fault occurs, the card memory would
         // have already been allocated (?)
-        ret_val = mmu_handler_gup(device, irq_pf->vaddr, irq_pf->len, irq_pf->ctid, irq_pf->stream, hpid, -1);
+        // Map-ahead (Ryloth, 2026-10-10): the shell reports only the faulting
+        // piece (about 24 KiB on the board), so every 2 MiB page of a long
+        // sequential read faults on its own. Extending the range maps the
+        // next pf_map_ahead pages in the same call; map_present() clips the
+        // range at the buffer end, so this never maps past the faulting buffer.
+        uint64_t pf_len = irq_pf->len;
+        if (pf_map_ahead > 0) {
+            uint64_t page = (uint64_t)1 << device->bd_data->ltlb_meta->page_shift;
+            uint64_t ahead = (irq_pf->vaddr & ~(page - 1)) + ((uint64_t)pf_map_ahead + 1) * page - irq_pf->vaddr;
+            if (ahead > pf_len) pf_len = ahead;
+        }
+        ret_val = mmu_handler_gup(device, irq_pf->vaddr, pf_len, irq_pf->ctid, irq_pf->stream, hpid, -1);
     #endif
 
     if (ret_val && ret_val != BUFF_NEEDS_EXP_SYNC_RET_CODE) {
