@@ -113,8 +113,10 @@ extern bool en_hmm;
 #define COYOTE_DRIVER_NAME "coyote_driver"
 #define DEV_FPGA_NAME "coyote_fpga"
 
-// Debug prints
+// Debug prints; on unless the build sets COYOTE_DEBUG (make COYOTE_DEBUG=0)
+#ifndef COYOTE_DEBUG
 #define COYOTE_DEBUG 1
+#endif
 #if (COYOTE_DEBUG == 0)
     #define dbg_info(...)
 #else
