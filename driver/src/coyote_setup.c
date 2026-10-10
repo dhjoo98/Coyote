@@ -248,6 +248,7 @@ static struct kobj_attribute kobj_attr_hstats = __ATTR_RO(cyt_attr_hstats);
 static struct kobj_attribute kobj_attr_prstats = __ATTR_RO(cyt_attr_prstats);
 #ifdef PLATFORM_ULTRASCALE_PLUS
 static struct kobj_attribute kobj_attr_engines = __ATTR_RO(cyt_attr_engines);
+static struct kobj_attribute kobj_attr_prdebug = __ATTR_RO(cyt_attr_prdebug);
 #endif
 static struct kobj_attribute kobj_attr_cnfg = __ATTR_RO(cyt_attr_cnfg);
 static struct kobj_attribute kobj_attr_eost = __ATTR(cyt_attr_eost, 0664, cyt_attr_eost_show, cyt_attr_eost_store);
@@ -263,6 +264,7 @@ static struct attribute *attrs[] = {
     &kobj_attr_prstats.attr,
     #ifdef PLATFORM_ULTRASCALE_PLUS
     &kobj_attr_engines.attr,
+    &kobj_attr_prdebug.attr,
     #endif
     &kobj_attr_cnfg.attr,
     &kobj_attr_eost.attr,

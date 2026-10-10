@@ -192,6 +192,54 @@ ssize_t cyt_attr_prstats_show(struct kobject *kobj, struct kobj_attribute *attr,
 }
 
 #ifdef PLATFORM_ULTRASCALE_PLUS
+/*
+ * Read-only PR debug view (added Oct 9 2026, caslwks00 PR stall diagnosis).
+ * Static-layer PR registers (static_slave.sv): reg 1 reads back the PR descriptor FIFO
+ * occupancy, reg 2 bit 0 = PR done, bit 1 = FIFO ready, reg 3 = PR count, reg 7 = EOS time;
+ * regs 11..16 = PR channel DMA request / completion / beat counters.
+ * XDMA engine registers (PG195): ctrl (0x04), status (0x40; NOT the clear-on-read copy at
+ * 0x44) and the completed descriptor count (0x48), for every probed engine, including the
+ * PR channel that cyt_attr_engines skips when n_fpga_chan < 3. No read here has a side effect.
+ */
+ssize_t cyt_attr_prdebug_show(struct kobject *kobj, struct kobj_attribute *attr, char *buff) {
+    struct bus_driver_data *bus_data = container_of(kobj, struct bus_driver_data, cyt_kobj);
+    BUG_ON(!bus_data);
+
+    ssize_t sw = 0;
+    uint32_t fifo_used = bus_data->stat_cnfg->reconfig_ctrl;
+    uint32_t stat      = bus_data->stat_cnfg->reconfig_stat;
+    uint32_t cnt       = bus_data->stat_cnfg->reconfig_cnt;
+    uint32_t eost      = bus_data->stat_cnfg->reconfig_eost;
+
+    sw += scnprintf(buff + sw, PAGE_SIZE - sw,
+        "pr_fifo_used: %u\n"
+        "pr_stat: 0x%08x (done=%u ready=%u)\n"
+        "pr_cnt: %u\n"
+        "pr_eost: %u\n"
+        "pr_dma H2C req/cmpl/beat: %u %u %u\n"
+        "pr_dma C2H req/cmpl/beat: %u %u %u\n",
+        fifo_used, stat, stat & 1u, (stat >> 1) & 1u, cnt, eost,
+        bus_data->stat_cnfg->hdma_debug[0], bus_data->stat_cnfg->hdma_debug[2], bus_data->stat_cnfg->hdma_debug[4],
+        bus_data->stat_cnfg->hdma_debug[1], bus_data->stat_cnfg->hdma_debug[3], bus_data->stat_cnfg->hdma_debug[5]);
+
+    for (int i = 0; i < XDMA_MAX_NUM_CHANNELS; i++) {
+        struct xdma_engine *e = bus_data->engine_h2c[i];
+        if (e && e->regs) {
+            sw += scnprintf(buff + sw, PAGE_SIZE - sw, "h2c%d: ctrl=0x%08x status=0x%08x cmpl_desc=%u\n",
+                i, ioread32(&e->regs->ctrl), ioread32(&e->regs->status), ioread32(&e->regs->completed_desc_count));
+        }
+        e = bus_data->engine_c2h[i];
+        if (e && e->regs) {
+            sw += scnprintf(buff + sw, PAGE_SIZE - sw, "c2h%d: ctrl=0x%08x status=0x%08x cmpl_desc=%u\n",
+                i, ioread32(&e->regs->ctrl), ioread32(&e->regs->status), ioread32(&e->regs->completed_desc_count));
+        }
+    }
+
+    return sw;
+}
+#endif
+
+#ifdef PLATFORM_ULTRASCALE_PLUS
 ssize_t cyt_attr_engines_show(struct kobject *kobj, struct kobj_attribute *attr, char *buff) {   
     struct bus_driver_data *bus_data = container_of(kobj, struct bus_driver_data, cyt_kobj);
     BUG_ON(!bus_data); 
