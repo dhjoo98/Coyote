@@ -72,10 +72,12 @@ wire all_done = &(~active | (req_done & data_done));
 
 // request handshake for the stream currently pointed at by rr
 wire rr_eligible = running && active[rr] && !req_done[rr];
-assign sq_rd.valid = rr_eligible;
-wire issue = sq_rd.valid && sq_rd.ready;
+wire issue = rr_eligible && sq_rd.ready;
 
+// Vivado synthesis resolves interface members of sq_rd only inside procedural blocks (07_perf_fpga does the same);
+// a continuous assign to sq_rd.valid failed with "cannot resolve hierarchical name for the item 'valid'".
 always_comb begin
+    sq_rd.valid       = rr_eligible;
     sq_rd.data        = '0;
     sq_rd.data.vaddr  = cur_vaddr[rr][VADDR_BITS-1:0];
     sq_rd.data.len    = csr_len[LEN_BITS-1:0];
