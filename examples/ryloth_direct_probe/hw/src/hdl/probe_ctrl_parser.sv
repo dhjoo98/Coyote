@@ -20,6 +20,8 @@
  *   13 ISSUED_SEL r  requests issued for stream SEL
  *   14 N_STREAMS  r  N_CARD_AXI of this build
  *   15 T_FIRST    r  timer value at the first beat on any stream (request latency)
+ *   16 LANE       w  64-bit word lane (0..7) for CSUM_SEL
+ *   17 CSUM_SEL   r  sum (mod 2^64) of 64-bit word LANE of every beat received by stream SEL (data check)
  */
 
 import lynxTypes::*;
@@ -40,6 +42,7 @@ module probe_ctrl_parser (
   output logic [PID_BITS-1:0]         csr_pid,
   output logic [31:0]                 csr_mask,
   output logic [31:0]                 csr_sel_raw,
+  output logic [2:0]                  csr_lane,
 
   input  logic                        st_done,
   input  logic [31:0]                 st_cq_cnt,
@@ -48,17 +51,18 @@ module probe_ctrl_parser (
   input  logic [63:0]                 st_beats_sel,
   input  logic [63:0]                 st_t_last_sel,
   input  logic [31:0]                 st_issued_sel,
-  input  logic [31:0]                 st_n_streams
+  input  logic [31:0]                 st_n_streams,
+  input  logic [63:0]                 st_csum_sel
 );
 
-localparam integer N_REGS = 16;
+localparam integer N_REGS = 32;
 localparam integer ADDR_MSB = $clog2(N_REGS);
 localparam integer ADDR_LSB = $clog2(AXIL_DATA_BITS/8);
 localparam integer AXI_ADDR_BITS = ADDR_LSB + ADDR_MSB;
 
 localparam integer R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17;
 
 logic [AXI_ADDR_BITS-1:0] axi_awaddr;
 logic axi_awready;
@@ -89,7 +93,7 @@ always_ff @(posedge aclk) begin
     csr_vaddr_we <= ctrl_reg_wren && (axi_awaddr[ADDR_LSB+:ADDR_MSB] == R_VADDR);
     if (ctrl_reg_wren) begin
       case (axi_awaddr[ADDR_LSB+:ADDR_MSB])
-        R_CTRL, R_VADDR, R_LEN, R_PID, R_N_REPS, R_N_BEATS, R_STRIDE, R_MASK, R_SEL:
+        R_CTRL, R_VADDR, R_LEN, R_PID, R_N_REPS, R_N_BEATS, R_STRIDE, R_MASK, R_SEL, R_LANE:
           for (int i = 0; i < (AXIL_DATA_BITS/8); i++) begin
             if (axi_ctrl.wstrb[i]) begin
               ctrl_reg[axi_awaddr[ADDR_LSB+:ADDR_MSB]][(i*8)+:8] <= axi_ctrl.wdata[(i*8)+:8];
@@ -127,6 +131,8 @@ always_ff @(posedge aclk) begin
         R_ISSUED_SEL: axi_rdata[31:0] <= st_issued_sel;
         R_N_STREAMS:  axi_rdata[31:0] <= st_n_streams;
         R_T_FIRST:    axi_rdata <= st_t_first;
+        R_LANE:       axi_rdata <= ctrl_reg[R_LANE];
+        R_CSUM_SEL:   axi_rdata <= st_csum_sel;
         default: ;
       endcase
     end
@@ -144,6 +150,7 @@ always_comb begin
   csr_pid     = ctrl_reg[R_PID][PID_BITS-1:0];
   csr_mask    = ctrl_reg[R_MASK][31:0];
   csr_sel_raw = ctrl_reg[R_SEL][31:0];
+  csr_lane    = ctrl_reg[R_LANE][2:0];
 end
 
 // ---------------------------------------------------------------- AXI-Lite handshake (verbatim from 07_perf_fpga)

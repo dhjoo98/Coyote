@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <array>
 #include <utility>
 #include <vector>
 #include <boost/program_options.hpp>
@@ -23,8 +24,13 @@
 namespace {
 constexpr uint32_t R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17;
 constexpr int DEFAULT_VFPGA_ID = 0;
+// deterministic fill: word k of stream i's region
+inline uint64_t splitmix64(uint64_t x) {
+    x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
+    return x ^ (x >> 31);
+}
 }
 
 int main(int argc, char *argv[]) {
@@ -71,7 +77,8 @@ int main(int argc, char *argv[]) {
         a.mem_block = windows ? static_cast<int32_t>(i + 1) : -1;
         regions[k] = static_cast<char*>(t.getMem(std::move(a)));
         if (!regions[k]) { std::cerr << "allocation failed for stream " << i << std::endl; return 1; }
-        std::memset(regions[k], 0x5a + i, region);
+        uint64_t *w = reinterpret_cast<uint64_t*>(regions[k]);
+        for (uint64_t x = 0; x < region / 8; x++) w[x] = splitmix64((static_cast<uint64_t>(i) << 40) ^ x);
         coyote::syncSg sg = {.addr = regions[k], .len = region};
         t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);     // blocking: the driver migrates the pages to the card
     }
@@ -94,6 +101,18 @@ int main(int argc, char *argv[]) {
             bases[k] = pg[0];
             std::cout << "stream " << first + k << ": card paddr 0x" << std::hex << pg[0] << std::dec << " (window " << (pg[0] >> 30) << "), "
                       << pg.size() << (huge ? " huge" : " regular") << " pages" << std::endl;
+        }
+    }
+
+    // expected per-stream, per-lane sums of 64-bit words (the vFPGA's data check), for one run
+    std::vector<std::array<uint64_t, 8>> expect(S);
+    for (unsigned k = 0; k < S; k++) {
+        expect[k].fill(0);
+        const uint64_t *w = reinterpret_cast<const uint64_t*>(regions[k]);
+        for (unsigned r = 0; r < reps; r++) {
+            const uint64_t off = advance ? static_cast<uint64_t>(r) * len : 0;
+            const uint64_t nbytes = ((len + 63) / 64) * 64;      // the stream delivers whole beats
+            for (uint64_t b = off; b < off + nbytes && b < region; b += 8) expect[k][(b / 8) % 8] += w[b / 8];
         }
     }
 
@@ -135,6 +154,20 @@ int main(int argc, char *argv[]) {
             std::cout << " " << std::setprecision(2) << (beats_per_stream * 64.0) / t_last / 1e9;
         }
         std::cout << " GB/s" << std::endl;
+        unsigned bad = 0;
+        for (unsigned k = 0; k < S; k++) {
+            t.setCSR(first + k, R_SEL);
+            for (unsigned j = 0; j < 8; j++) {
+                t.setCSR(j, R_LANE);
+                const uint64_t got = t.getCSR(R_CSUM_SEL);
+                if (got != expect[k][j]) {
+                    if (bad < 8) std::cerr << "  DATA MISMATCH stream " << first + k << " lane " << j << ": got 0x" << std::hex << got
+                                           << " expected 0x" << expect[k][j] << std::dec << std::endl;
+                    bad++;
+                }
+            }
+        }
+        std::cout << "  data check: " << (bad ? "FAIL" : "all streams match") << " (" << S * 8 << " lane sums, " << bad << " wrong)" << std::endl;
     }
     return 0;
 }

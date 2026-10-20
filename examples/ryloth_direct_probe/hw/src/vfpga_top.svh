@@ -27,6 +27,8 @@ logic [63:0]            csr_vaddr;
 logic                   csr_vaddr_we;
 logic [63:0]            csr_stride;      // unused: per-stream table below
 logic [31:0]            csr_sel_raw;
+logic [2:0]             csr_lane;
+logic [63:0]            st_csum_sel;
 logic [31:0]            csr_len;
 logic [31:0]            csr_n_reps;
 logic [63:0]            csr_n_beats;
@@ -48,7 +50,7 @@ probe_ctrl_parser inst_ctrl (
     .csr_n_reps(csr_n_reps), .csr_n_beats(csr_n_beats), .csr_pid(csr_pid), .csr_mask(csr_mask), .csr_sel_raw(csr_sel_raw),
     .st_done(st_done), .st_cq_cnt(st_cq_cnt), .st_timer(st_timer), .st_t_first(st_t_first),
     .st_beats_sel(st_beats_sel), .st_t_last_sel(st_t_last_sel), .st_issued_sel(st_issued_sel),
-    .st_n_streams(32'(NS))
+    .st_n_streams(32'(NS)), .csr_lane(csr_lane), .st_csum_sel(st_csum_sel)
 );
 
 // ---------------------------------------------------------------- state
@@ -143,6 +145,21 @@ for (genvar i = 0; i < NS; i++) begin : gen_card_recv
     assign axis_card_recv[i].tready = 1'b1;
     assign beat_fire[i] = axis_card_recv[i].tvalid && axis_card_recv[i].tready;
 end
+
+// data check: per stream, eight 64-bit lane accumulators (sum mod 2^64 of word j of every beat). Keeps all 512 data
+// bits of every card stream alive (so the full buses route into the region) and lets the host verify every byte read.
+logic [63:0] csum_mux [NS];
+for (genvar i = 0; i < NS; i++) begin : g_csum
+    logic [7:0][63:0] acc;
+    always_ff @(posedge aclk) begin
+        if (!aresetn || start) acc <= '0;
+        else if (beat_fire[i]) begin
+            for (int j = 0; j < 8; j++) acc[j] <= acc[j] + axis_card_recv[i].tdata[64*j +: 64];
+        end
+    end
+    assign csum_mux[i] = acc[csr_lane];
+end
+always_ff @(posedge aclk) st_csum_sel <= csum_mux[csr_sel];   // registered: off the AXI-Lite read path
 
 // per-stream readback
 assign st_beats_sel  = beats[csr_sel];
