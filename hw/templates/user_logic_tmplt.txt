@@ -66,6 +66,11 @@ module design_user_logic_c{{ c_cnfg }}_{{ c_reg }} (
     AXI4SR.m                    axis_card_send [N_CARD_AXI],
 
 {% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+    // DIRECT READ PORTS (Ryloth): read-only AXI to card memory, physical addresses
+    AXI4.m                      axi_drd [N_DIRECT_RD],
+
+{% endif %}
 {% if cnfg.en_rdma %}
     // RDMA DATA STREAMS REQUESTER
     AXI4SR.s                    axis_rreq_recv [N_RDMA_AXI],

@@ -1283,7 +1283,7 @@ module shell_top (
         .s_axim_ctrl(axim_ctrl[0+:{{ cnfg.n_reg }}]),
 {% endif %}
 {% if cnfg.en_mem %}
-        .m_axi_ddr(axi_ddr_in[{{ cnfg.n_net_chan }}+:{{ (1+cnfg.n_reg*cnfg.n_card_axi) }}]),
+        .m_axi_ddr(axi_ddr_in[{{ cnfg.n_net_chan }}+:{{ (1+cnfg.n_reg*cnfg.n_card_axi+cnfg.n_direct_rd) }}]),
 {% endif %}
 {% if cnfg.en_strm %}
         .m_host_dma_rd_req(dma_rd_req[{{ cnfg.strm_chan }}]),

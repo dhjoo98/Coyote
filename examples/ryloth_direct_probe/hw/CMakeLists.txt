@@ -10,7 +10,7 @@ set(CYT_DIR ${CMAKE_SOURCE_DIR}/../../../)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CYT_DIR}/cmake)
 find_package(CoyoteHW REQUIRED)
 project(ryloth_direct_probe_hw)
-message("*** Ryloth direct-HBM probe [Hardware]: N_CARD_AXI=${N_CARD_AXI} HBM_SPLIT=${HBM_SPLIT} ***")
+message("*** Ryloth direct-HBM probe [Hardware]: N_CARD_AXI=${N_CARD_AXI} N_DIRECT_RD=${N_DIRECT_RD} HBM_SPLIT=${HBM_SPLIT} HBM_DIRECT=${HBM_DIRECT} ***")
 
 set(FDEV_NAME "u55c")
 set(N_REGIONS 1)

@@ -98,6 +98,11 @@ set(HBM_SPLIT 0 CACHE STRING "HBM bank splitting")
 # address selects (card address window i = PC i of each stack); the authors' block-HBM recipe for UltraScale+ (#209)
 set(HBM_DIRECT 0 CACHE STRING "Direct HBM: no RAMA striping, one pseudo-channel per port window")
 
+# Ryloth direct read ports (2026-10-20): read-only AXI from the vFPGA straight to the HBM, without the card DMA engine,
+# stream register arrays, write half, clock converter and RAMA of a Coyote card stream. Placed after the card streams.
+set(N_DIRECT_RD 0 CACHE STRING "Direct read ports (needs HBM_SPLIT=1, HBM_DIRECT=1, N_REGIONS=1)")
+set(DRD_HCLK 0 CACHE STRING "Direct read ports keep a clock converter to HCLK (fallback)")
+
 set(DATA_DEST_BITS 4 CACHE STRING "Number of bits used to address the coyote stream index.")
 set(VADDR_BITS 48 CACHE STRING "Bits of a virtual address used e.g. in the MMU.")
 
@@ -509,7 +514,15 @@ macro(validation_checks_hw)
         set(N_NET_CHAN 0)
         MATH(EXPR N_NET_CHAN "${N_TCP_CHAN} + ${N_RDMA_CHAN}")
         if(EN_MEM)
-            MATH(EXPR N_MEM_CHAN "${N_REGIONS} * ${N_CARD_AXI} + 1 + ${N_MEM_CHAN}")
+            MATH(EXPR N_MEM_CHAN "${N_REGIONS} * ${N_CARD_AXI} + 1 + ${N_DIRECT_RD} + ${N_MEM_CHAN}")
+        endif()
+        if(N_DIRECT_RD GREATER 0)
+            if(NOT EN_MEM OR NOT HBM_SPLIT EQUAL 1 OR NOT HBM_DIRECT EQUAL 1 OR NOT N_REGIONS EQUAL 1)
+                message(FATAL_ERROR "N_DIRECT_RD needs EN_MEM=1, HBM_SPLIT=1, HBM_DIRECT=1 and N_REGIONS=1.")
+            endif()
+            if(N_MEM_CHAN GREATER 16)
+                message(FATAL_ERROR "1 + N_CARD_AXI + N_DIRECT_RD = ${N_MEM_CHAN} memory ports; at most 16 with HBM_SPLIT=1.")
+            endif()
         endif()
         if(EN_TCP OR EN_RDMA)
             MATH(EXPR N_MEM_CHAN "${N_NET_CHAN} + ${N_MEM_CHAN}")

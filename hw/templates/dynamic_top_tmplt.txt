@@ -44,7 +44,7 @@ module design_dynamic_top #(
 {% endif %}
 {% if cnfg.en_mem %}
     // AXI4 DDR 
-    AXI4.m									    m_axi_ddr [1+N_REGIONS*N_CARD_AXI],
+    AXI4.m									    m_axi_ddr [1+N_REGIONS*N_CARD_AXI+N_DIRECT_RD],
     
 {% endif %}
 {% if cnfg.en_strm %}
@@ -328,6 +328,22 @@ module design_dynamic_top #(
             axi_stripe #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_strp (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_s0[i*N_CARD_AXI+j+1]), .m_axi(m_axi_ddr[i*N_CARD_AXI+j+1]));
         end
     end
+
+{% if cnfg.n_direct_rd > 0 %}
+    // Ryloth direct read ports (2026-10-20): user region -> PR decoupler -> read-only register stages ->
+    // m_axi_ddr[1+N_CARD_AXI+k]. No card DMA engine, credits, stream register arrays, MMU or write half.
+    // ----------------------------------------------------------------------
+    AXI4 axi_drd_ul [N_DIRECT_RD] ();
+    AXI4 axi_drd_s1 [N_DIRECT_RD] ();
+    AXI4 axi_drd_s2 [N_DIRECT_RD] ();
+
+    for(genvar k = 0; k < N_DIRECT_RD; k++) begin
+        axi_rd_decoupler #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_dcpl (.decouple(decouple_uclk[0]), .s_axi(axi_drd_ul[k]), .m_axi(axi_drd_s1[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s0 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
+    end
+
+{% endif %}
 
     // Last rewrite:
     // Rewrite the last signal based on the forwarded last signal of the request which is always 1 
@@ -1093,6 +1109,20 @@ module design_dynamic_top #(
         .axis_card_{{j}}_src_tlast      (axis_card_out_ul[{{i}}*N_CARD_AXI+{{j}}].tlast),
         .axis_card_{{j}}_src_tready     (axis_card_out_ul[{{i}}*N_CARD_AXI+{{j}}].tready),
         .axis_card_{{j}}_src_tvalid     (axis_card_out_ul[{{i}}*N_CARD_AXI+{{j}}].tvalid),
+    {% endfor %}
+{% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+        // DIRECT READ PORTS (Ryloth)
+    {% for k in range(0, cnfg.n_direct_rd) %}
+        .axi_drd_{{k}}_araddr           (axi_drd_ul[{{k}}].araddr[DRD_ADDR_BITS-1:0]),
+        .axi_drd_{{k}}_arlen            (axi_drd_ul[{{k}}].arlen),
+        .axi_drd_{{k}}_arvalid          (axi_drd_ul[{{k}}].arvalid),
+        .axi_drd_{{k}}_arready          (axi_drd_ul[{{k}}].arready),
+        .axi_drd_{{k}}_rdata            (axi_drd_ul[{{k}}].rdata),
+        .axi_drd_{{k}}_rlast            (axi_drd_ul[{{k}}].rlast),
+        .axi_drd_{{k}}_rresp            (axi_drd_ul[{{k}}].rresp),
+        .axi_drd_{{k}}_rvalid           (axi_drd_ul[{{k}}].rvalid),
+        .axi_drd_{{k}}_rready           (axi_drd_ul[{{k}}].rready),
     {% endfor %}
 {% endif %}
 {% if cnfg.en_rdma %}

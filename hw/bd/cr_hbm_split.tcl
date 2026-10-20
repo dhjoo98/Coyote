@@ -88,6 +88,49 @@ proc create_hier_cell_init_logic { parentCell nameHier } {
   current_bd_instance $oldCurInst
 }
 
+# Ryloth direct read ports (2026-10-20): HBM path of a direct read port. A register slice and an AXI4-to-AXI3
+# protocol converter (the HBM ports take at most 16 beats; the converter splits longer bursts), no RAMA. The HBM AXI
+# port runs on ACLK; with hclk_conv = 1 (DRD_HCLK) a clock converter to HCLK is kept in front of the converter.
+proc create_hier_cell_path_drd { parentCell nameHier hclk_conv } {
+  set parentObj [get_bd_cells $parentCell]
+  set oldCurInst [current_bd_instance .]
+  current_bd_instance $parentObj
+  set hier_obj [create_bd_cell -type hier $nameHier]
+  current_bd_instance $hier_obj
+
+  create_bd_intf_pin -mode Master -vlnv xilinx.com:interface:aximm_rtl:1.0 M_AXI
+  create_bd_intf_pin -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S_AXI
+  create_bd_pin -dir I -type clk aclk
+  create_bd_pin -dir I -type rst aresetn
+  create_bd_pin -dir I -type rst hresetn
+  create_bd_pin -dir I -type clk hclk
+
+  set slice_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 slice_0]
+  set_property -dict [ list CONFIG.REG_AR {10} CONFIG.REG_R {10} CONFIG.REG_AW {0} CONFIG.REG_W {0} CONFIG.REG_B {0} ] $slice_0
+  set prot_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_protocol_converter:2.1 prot_0]
+  set_property -dict [ list CONFIG.SI_PROTOCOL {AXI4} CONFIG.MI_PROTOCOL {AXI3} CONFIG.TRANSLATION_MODE {2} ] $prot_0
+
+  connect_bd_intf_net [get_bd_intf_pins S_AXI] [get_bd_intf_pins slice_0/S_AXI]
+  connect_bd_intf_net [get_bd_intf_pins prot_0/M_AXI] [get_bd_intf_pins M_AXI]
+  connect_bd_net [get_bd_pins aclk] [get_bd_pins slice_0/aclk]
+  connect_bd_net [get_bd_pins aresetn] [get_bd_pins slice_0/aresetn]
+  if {$hclk_conv eq 1} {
+    create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 axi_clock_converter_0
+    connect_bd_intf_net [get_bd_intf_pins slice_0/M_AXI] [get_bd_intf_pins axi_clock_converter_0/S_AXI]
+    connect_bd_intf_net [get_bd_intf_pins axi_clock_converter_0/M_AXI] [get_bd_intf_pins prot_0/S_AXI]
+    connect_bd_net [get_bd_pins aclk] [get_bd_pins axi_clock_converter_0/s_axi_aclk]
+    connect_bd_net [get_bd_pins aresetn] [get_bd_pins axi_clock_converter_0/s_axi_aresetn]
+    connect_bd_net [get_bd_pins hclk] [get_bd_pins axi_clock_converter_0/m_axi_aclk] [get_bd_pins prot_0/aclk]
+    connect_bd_net [get_bd_pins hresetn] [get_bd_pins axi_clock_converter_0/m_axi_aresetn] [get_bd_pins prot_0/aresetn]
+  } else {
+    connect_bd_intf_net [get_bd_intf_pins slice_0/M_AXI] [get_bd_intf_pins prot_0/S_AXI]
+    connect_bd_net [get_bd_pins aclk] [get_bd_pins prot_0/aclk]
+    connect_bd_net [get_bd_pins aresetn] [get_bd_pins prot_0/aresetn]
+  }
+
+  current_bd_instance $oldCurInst
+}
+
 proc create_hier_cell_path { parentCell nameHier } {
 
   variable script_folder
@@ -412,12 +455,21 @@ proc cr_bd_design_hbm { parentCell } {
     set hbm_density "16GB"
   }
 
+  # Ryloth direct read ports: the switch borrows one AXI port clock, which should be the fastest (PG276). With direct
+  # ports on ACLK, take it from the shell port (slot 0 / 16), which keeps its clock converter at HCLK.
+  set clk_sel0 "AXI_15_ACLK"
+  set clk_sel1 "AXI_31_ACLK"
+  if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && !([info exists cnfg(drd_hclk)] && $cnfg(drd_hclk) eq 1)} {
+     set clk_sel0 "AXI_00_ACLK"
+     set clk_sel1 "AXI_16_ACLK"
+  }
+
   set cmd "set hbm_inst \[ create_bd_cell -type ip -vlnv xilinx.com:ip:hbm:1.0 hbm_inst ]
    set_property -dict \[ list \
      CONFIG.USER_AXI_CLK_FREQ {[expr {$cnfg(hclk_f)}]} \
      CONFIG.USER_AXI_CLK1_FREQ {[expr {$cnfg(hclk_f)}]} \
-     CONFIG.USER_CLK_SEL_LIST0 {AXI_15_ACLK} \
-     CONFIG.USER_CLK_SEL_LIST1 {AXI_31_ACLK} \
+     CONFIG.USER_CLK_SEL_LIST0 {$clk_sel0} \
+     CONFIG.USER_CLK_SEL_LIST1 {$clk_sel1} \
      CONFIG.USER_DIS_REF_CLK_BUFG {TRUE} \
      CONFIG.USER_HBM_DENSITY {$hbm_density} \
      CONFIG.USER_HBM_STACK {2} \
@@ -585,8 +637,18 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
 }
 
  # Path
+ # Ryloth direct read ports: the last n_direct_rd memory ports (slot p of both stacks) get the direct path
+ set drd_n 0
+ if {[info exists cnfg(n_direct_rd)]} { set drd_n $cnfg(n_direct_rd) }
+ set drd_hclk 0
+ if {[info exists cnfg(drd_hclk)]} { set drd_hclk $cnfg(drd_hclk) }
+ set drd_first [expr {$cnfg(n_mem_chan) - $drd_n}]
  for {set i 0}  {$i < 2 * $cnfg(n_mem_chan)} {incr i} {  
-    create_hier_cell_path [current_bd_instance .] path_$i
+    if {$drd_n > 0 && [expr {$i % $cnfg(n_mem_chan)}] >= $drd_first} {
+       create_hier_cell_path_drd [current_bd_instance .] path_$i $drd_hclk
+    } else {
+       create_hier_cell_path [current_bd_instance .] path_$i
+    }
     connect_bd_net [get_bd_ports aclk] [get_bd_pins path_$i/aclk]
     connect_bd_net [get_bd_ports aresetn] [get_bd_pins path_$i/aresetn]
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/hclk]
@@ -649,7 +711,18 @@ if {$cnfg(fdev) eq "u55c"} {
  connect_bd_net [get_bd_ports DRAM_STAT_CATTRIP] [get_bd_pins hbm_reset_sync_SLR0/aux_reset_in] [get_bd_pins util_vector_logic/Res]
  connect_bd_net [get_bd_ports dclk] [get_bd_pins axi_apb_bridge_inst/s_axi_aclk] [get_bd_pins hbm_inst/APB_0_PCLK] [get_bd_pins hbm_inst/APB_1_PCLK]
  connect_bd_net [get_bd_ports dresetn] [get_bd_pins axi_apb_bridge_inst/s_axi_aresetn] [get_bd_pins hbm_inst/APB_0_PRESET_N] [get_bd_pins hbm_inst/APB_1_PRESET_N]
- connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins hbm_inst/AXI_00_ACLK] [get_bd_pins hbm_inst/AXI_01_ACLK] [get_bd_pins hbm_inst/AXI_02_ACLK] [get_bd_pins hbm_inst/AXI_03_ACLK] [get_bd_pins hbm_inst/AXI_04_ACLK] [get_bd_pins hbm_inst/AXI_05_ACLK] [get_bd_pins hbm_inst/AXI_06_ACLK] [get_bd_pins hbm_inst/AXI_07_ACLK] [get_bd_pins hbm_inst/AXI_08_ACLK] [get_bd_pins hbm_inst/AXI_09_ACLK] [get_bd_pins hbm_inst/AXI_10_ACLK] [get_bd_pins hbm_inst/AXI_11_ACLK] [get_bd_pins hbm_inst/AXI_12_ACLK] [get_bd_pins hbm_inst/AXI_13_ACLK] [get_bd_pins hbm_inst/AXI_14_ACLK] [get_bd_pins hbm_inst/AXI_15_ACLK] [get_bd_pins hbm_inst/AXI_16_ACLK] [get_bd_pins hbm_inst/AXI_17_ACLK] [get_bd_pins hbm_inst/AXI_18_ACLK] [get_bd_pins hbm_inst/AXI_19_ACLK] [get_bd_pins hbm_inst/AXI_20_ACLK] [get_bd_pins hbm_inst/AXI_21_ACLK] [get_bd_pins hbm_inst/AXI_22_ACLK] [get_bd_pins hbm_inst/AXI_23_ACLK] [get_bd_pins hbm_inst/AXI_24_ACLK] [get_bd_pins hbm_inst/AXI_25_ACLK] [get_bd_pins hbm_inst/AXI_26_ACLK] [get_bd_pins hbm_inst/AXI_27_ACLK] [get_bd_pins hbm_inst/AXI_28_ACLK] [get_bd_pins hbm_inst/AXI_29_ACLK] [get_bd_pins hbm_inst/AXI_30_ACLK] [get_bd_pins hbm_inst/AXI_31_ACLK] [get_bd_pins hbm_reset_sync_SLR0/slowest_sync_clk]
+ # AXI port clocks: HCLK, except direct read ports on ACLK (Ryloth; PG276: port clocks may be asynchronous)
+ set hclk_pins [list [get_bd_pins hbm_reset_sync_SLR0/slowest_sync_clk]]
+ set aclk_pins {}
+ for {set s 0} {$s < 32} {incr s} {
+    set p [expr {$s % 16}]
+    set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ACLK" $s]]
+    if {$drd_n > 0 && $drd_hclk ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } else { lappend hclk_pins $pin }
+ }
+ connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] {*}$hclk_pins
+ if {[llength $aclk_pins] > 0} {
+    connect_bd_net [get_bd_ports aclk] {*}$aclk_pins
+ }
  connect_bd_net [get_bd_pins hresetn] [get_bd_pins hbm_reset_sync_SLR0/ext_reset_in]
  connect_bd_net [get_bd_pins hbm_inst/DRAM_0_STAT_CATTRIP] [get_bd_pins util_vector_logic/Op1]
  connect_bd_net [get_bd_ports DRAM_0_STAT_TEMP] [get_bd_pins hbm_inst/DRAM_0_STAT_TEMP]
@@ -658,7 +731,23 @@ if {$cnfg(fdev) eq "u55c"} {
  connect_bd_net [get_bd_pins hbm_inst/apb_complete_0] [get_bd_pins init_logic/In0]
  connect_bd_net [get_bd_pins hbm_inst/apb_complete_1] [get_bd_pins init_logic/In1]
  connect_bd_net [get_bd_ports hclk] [get_bd_pins hbm_inst/HBM_REF_CLK_0] [get_bd_pins hbm_inst/HBM_REF_CLK_1]
- connect_bd_net [get_bd_pins hbm_inst/AXI_00_ARESET_N] [get_bd_pins hbm_inst/AXI_01_ARESET_N] [get_bd_pins hbm_inst/AXI_02_ARESET_N] [get_bd_pins hbm_inst/AXI_03_ARESET_N] [get_bd_pins hbm_inst/AXI_04_ARESET_N] [get_bd_pins hbm_inst/AXI_05_ARESET_N] [get_bd_pins hbm_inst/AXI_06_ARESET_N] [get_bd_pins hbm_inst/AXI_07_ARESET_N] [get_bd_pins hbm_inst/AXI_08_ARESET_N] [get_bd_pins hbm_inst/AXI_09_ARESET_N] [get_bd_pins hbm_inst/AXI_10_ARESET_N] [get_bd_pins hbm_inst/AXI_11_ARESET_N] [get_bd_pins hbm_inst/AXI_12_ARESET_N] [get_bd_pins hbm_inst/AXI_13_ARESET_N] [get_bd_pins hbm_inst/AXI_14_ARESET_N] [get_bd_pins hbm_inst/AXI_15_ARESET_N] [get_bd_pins hbm_inst/AXI_16_ARESET_N] [get_bd_pins hbm_inst/AXI_17_ARESET_N] [get_bd_pins hbm_inst/AXI_18_ARESET_N] [get_bd_pins hbm_inst/AXI_19_ARESET_N] [get_bd_pins hbm_inst/AXI_20_ARESET_N] [get_bd_pins hbm_inst/AXI_21_ARESET_N] [get_bd_pins hbm_inst/AXI_22_ARESET_N] [get_bd_pins hbm_inst/AXI_23_ARESET_N] [get_bd_pins hbm_inst/AXI_24_ARESET_N] [get_bd_pins hbm_inst/AXI_25_ARESET_N] [get_bd_pins hbm_inst/AXI_26_ARESET_N] [get_bd_pins hbm_inst/AXI_27_ARESET_N] [get_bd_pins hbm_inst/AXI_28_ARESET_N] [get_bd_pins hbm_inst/AXI_29_ARESET_N] [get_bd_pins hbm_inst/AXI_30_ARESET_N] [get_bd_pins hbm_inst/AXI_31_ARESET_N] [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn]
+ # AXI port resets: direct read ports on ACLK use a reset synchronized to ACLK (same sources as the HCLK one)
+ set hrst_pins {}
+ set arst_pins {}
+ for {set s 0} {$s < 32} {incr s} {
+    set p [expr {$s % 16}]
+    set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ARESET_N" $s]]
+    if {$drd_n > 0 && $drd_hclk ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } else { lappend hrst_pins $pin }
+ }
+ connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] {*}$hrst_pins
+ if {[llength $arst_pins] > 0} {
+    set hbm_reset_sync_drd [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 hbm_reset_sync_drd ]
+    set_property -dict [ list CONFIG.C_AUX_RESET_HIGH {1} ] $hbm_reset_sync_drd
+    connect_bd_net [get_bd_ports aclk] [get_bd_pins hbm_reset_sync_drd/slowest_sync_clk]
+    connect_bd_net [get_bd_pins hresetn] [get_bd_pins hbm_reset_sync_drd/ext_reset_in]
+    connect_bd_net [get_bd_ports DRAM_STAT_CATTRIP] [get_bd_pins hbm_reset_sync_drd/aux_reset_in]
+    connect_bd_net [get_bd_pins hbm_reset_sync_drd/interconnect_aresetn] {*}$arst_pins
+ }
  connect_bd_net [get_bd_ports hbm_mc_init_seq_complete] [get_bd_pins init_logic/hbm_mc_init_seq_complete]
 
 ########################################################################################################

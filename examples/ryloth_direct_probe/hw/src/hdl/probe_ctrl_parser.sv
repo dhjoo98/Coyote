@@ -22,6 +22,7 @@
  *   15 T_FIRST    r  timer value at the first beat on any stream (request latency)
  *   16 LANE       w  64-bit word lane (0..7) for CSUM_SEL
  *   17 CSUM_SEL   r  sum (mod 2^64) of 64-bit word LANE of every beat received by stream SEL (data check)
+ *   18 N_DIRECT   r  N_DIRECT_RD of this build (streams N_STREAMS-N_DIRECT .. N_STREAMS-1 are direct read ports)
  */
 
 import lynxTypes::*;
@@ -52,7 +53,8 @@ module probe_ctrl_parser (
   input  logic [63:0]                 st_t_last_sel,
   input  logic [31:0]                 st_issued_sel,
   input  logic [31:0]                 st_n_streams,
-  input  logic [63:0]                 st_csum_sel
+  input  logic [63:0]                 st_csum_sel,
+  input  logic [31:0]                 st_n_direct
 );
 
 localparam integer N_REGS = 32;
@@ -62,7 +64,7 @@ localparam integer AXI_ADDR_BITS = ADDR_LSB + ADDR_MSB;
 
 localparam integer R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18;
 
 logic [AXI_ADDR_BITS-1:0] axi_awaddr;
 logic axi_awready;
@@ -133,6 +135,7 @@ always_ff @(posedge aclk) begin
         R_T_FIRST:    axi_rdata <= st_t_first;
         R_LANE:       axi_rdata <= ctrl_reg[R_LANE];
         R_CSUM_SEL:   axi_rdata <= st_csum_sel;
+        R_N_DIRECT:   axi_rdata[31:0] <= st_n_direct;
         default: ;
       endcase
     end

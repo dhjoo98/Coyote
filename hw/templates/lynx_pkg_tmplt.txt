@@ -214,6 +214,8 @@ package lynxTypes;
     localparam integer N_REG_DYN_HOST_S1 = {{ cnfg.nr_dh_s1 }}; // 3
     localparam integer N_REG_DYN_CARD_S0 = {{ cnfg.nr_dc_s0 }}; // 4
     localparam integer N_REG_DYN_CARD_S1 = {{ cnfg.nr_dc_s1 }}; // 3
+    localparam integer N_REG_DYN_DRD_S0 = 2; // direct read ports, memory side
+    localparam integer N_REG_DYN_DRD_S1 = 2; // direct read ports, user side
     localparam integer N_REG_DYN_NET_S0 = {{ cnfg.nr_dn_s0 }}; // 4
     localparam integer N_REG_DYN_NET_S1 = {{ cnfg.nr_dn_s1 }}; // 3
     localparam integer N_REG_NET_S0 = {{ cnfg.nr_n_s0 }}; // 4
@@ -383,6 +385,8 @@ package lynxTypes;
     localparam integer QSFP = {{ cnfg.qsfp }};
 
     localparam integer N_CARD_AXI = {{ cnfg.n_card_axi }};
+    localparam integer N_DIRECT_RD = {{ cnfg.n_direct_rd }}; // Ryloth direct read ports (read-only AXI to the HBM)
+    localparam integer DRD_ADDR_BITS = 34; // card physical address of a direct read (16 GiB)
     localparam integer N_STRM_AXI = {{ cnfg.n_strm_axi }};
     localparam integer N_RDMA_AXI = {{ cnfg.n_rdma_axi }};
 

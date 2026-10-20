@@ -24,7 +24,7 @@
 namespace {
 constexpr uint32_t R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18;
 constexpr int DEFAULT_VFPGA_ID = 0;
 // deterministic fill: word k of stream i's region
 inline uint64_t splitmix64(uint64_t x) {
@@ -59,6 +59,10 @@ int main(int argc, char *argv[]) {
 
     coyote::cThread t(DEFAULT_VFPGA_ID, getpid());
     const unsigned n_build = static_cast<unsigned>(t.getCSR(R_N_STREAMS));
+    // probe v3: the last n_direct streams are direct read ports (physical card addresses, no MMU); older partials read 0
+    const unsigned n_direct = static_cast<unsigned>(t.getCSR(R_N_DIRECT)) & 0xffu;
+    const unsigned first_direct = (n_direct <= n_build) ? n_build - n_direct : n_build;
+    if (n_direct) std::cout << "direct read ports: streams " << first_direct << " .. " << n_build - 1 << std::endl;
     if (first >= n_build) { std::cerr << "first stream " << first << " >= build streams " << n_build << std::endl; return 1; }
     unsigned S = (n_streams_req == 0) ? n_build - first : n_streams_req;
     if (first + S > n_build) S = n_build - first;
@@ -84,10 +88,13 @@ int main(int argc, char *argv[]) {
         t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);     // blocking: the driver migrates the pages to the card
     }
 
-    // stage 2: the vFPGA reads physical window offsets; each region must be physically contiguous on the card
+    // stage 2 and direct read ports: the vFPGA reads physical card addresses; each region must be physically contiguous
     std::vector<uint64_t> bases(S, 0);
-    if (phys) {
+    std::vector<bool> use_phys(S);
+    for (unsigned k = 0; k < S; k++) use_phys[k] = phys || (first + k >= first_direct);
+    {
         for (unsigned k = 0; k < S; k++) {
+            if (!use_phys[k]) continue;
             bool huge = false;
             // the driver keeps one card address per 4 KiB page, also for huge-page buffers
             std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
@@ -125,7 +132,7 @@ int main(int argc, char *argv[]) {
     for (unsigned run = 0; run < n_runs; run++) {
         for (unsigned k = 0; k < S; k++) {               // per-stream base: SEL then VADDR
             t.setCSR(first + k, R_SEL);
-            t.setCSR(phys ? bases[k] : reinterpret_cast<uint64_t>(regions[k]), R_VADDR);
+            t.setCSR(use_phys[k] ? bases[k] : reinterpret_cast<uint64_t>(regions[k]), R_VADDR);
         }
         t.setCSR(0, R_STRIDE);
         t.setCSR(len, R_LEN);

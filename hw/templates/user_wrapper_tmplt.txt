@@ -114,6 +114,20 @@ module design_user_wrapper_{{ c_reg }} (
     (* io_buffer_type = "none" *) output logic                                axis_card_{{i}}_src_tvalid,
     {% endfor %}
 {% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+    {% for i in range(0, cnfg.n_direct_rd) %}
+    // AXI4 DIRECT READ (Ryloth): read channels only, card physical addresses
+    (* io_buffer_type = "none" *) output logic[DRD_ADDR_BITS-1:0]             axi_drd_{{i}}_araddr,
+    (* io_buffer_type = "none" *) output logic[7:0]                           axi_drd_{{i}}_arlen,
+    (* io_buffer_type = "none" *) output logic                                axi_drd_{{i}}_arvalid,
+    (* io_buffer_type = "none" *) input  logic                                axi_drd_{{i}}_arready,
+    (* io_buffer_type = "none" *) input  logic[AXI_DATA_BITS-1:0]             axi_drd_{{i}}_rdata,
+    (* io_buffer_type = "none" *) input  logic                                axi_drd_{{i}}_rlast,
+    (* io_buffer_type = "none" *) input  logic[1:0]                           axi_drd_{{i}}_rresp,
+    (* io_buffer_type = "none" *) input  logic                                axi_drd_{{i}}_rvalid,
+    (* io_buffer_type = "none" *) output logic                                axi_drd_{{i}}_rready,
+    {% endfor %}
+{% endif %}
 {% if cnfg.en_rdma %}
     // RDMA DESCRIPTORS
     (* io_buffer_type = "none" *) output logic                                rdma_sq_valid,
@@ -377,6 +391,29 @@ module design_user_wrapper_{{ c_reg }} (
 
 {% endfor %}
 {% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+    AXI4 axi_drd [N_DIRECT_RD] (.*);
+    AXI4 axi_drd_int [N_DIRECT_RD] (.*);
+
+{% for i in range(0, cnfg.n_direct_rd) %}
+    assign axi_drd_{{i}}_araddr                 = axi_drd[{{i}}].araddr[DRD_ADDR_BITS-1:0];
+    assign axi_drd_{{i}}_arlen                  = axi_drd[{{i}}].arlen;
+    assign axi_drd_{{i}}_arvalid                = axi_drd[{{i}}].arvalid;
+    assign axi_drd[{{i}}].arready               = axi_drd_{{i}}_arready;
+    assign axi_drd[{{i}}].rdata                 = axi_drd_{{i}}_rdata;
+    assign axi_drd[{{i}}].rlast                 = axi_drd_{{i}}_rlast;
+    assign axi_drd[{{i}}].rresp                 = axi_drd_{{i}}_rresp;
+    assign axi_drd[{{i}}].rvalid                = axi_drd_{{i}}_rvalid;
+    assign axi_drd[{{i}}].rid                   = 0;
+    assign axi_drd_{{i}}_rready                 = axi_drd[{{i}}].rready;
+    assign axi_drd[{{i}}].awready               = 1'b0;
+    assign axi_drd[{{i}}].wready                = 1'b0;
+    assign axi_drd[{{i}}].bvalid                = 1'b0;
+    assign axi_drd[{{i}}].bresp                 = 2'b0;
+    assign axi_drd[{{i}}].bid                   = 0;
+
+{% endfor %}
+{% endif %}
 {% if cnfg.en_rdma %}
     AXI4S axis_rdma_sink (.*);
     AXI4S axis_rdma_sink_int (.*);
@@ -495,6 +532,13 @@ module design_user_wrapper_{{ c_reg }} (
 {% endfor %}
 
 {% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+    // AXI direct read (Ryloth)
+{% for i in range(0, cnfg.n_direct_rd) %}
+    axi_rd_reg #(.ADDR_BITS(DRD_ADDR_BITS)) inst_reg_axi_drd_{{ i }} (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_int[{{ i }}]), .m_axi(axi_drd[{{ i }}]));
+{% endfor %}
+
+{% endif %}
 {% if cnfg.en_rdma %}
     // AXIS rdma
     axis_reg inst_reg_axis_rdma_sink (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_rdma_sink), .m_axis(axis_rdma_sink_int));
@@ -554,6 +598,13 @@ module design_user_wrapper_{{ c_reg }} (
 {% for i in range(0, cnfg.n_card_axi) %} 
     `AXIS_ASSIGN(axis_card_sink[{{ i }}], axis_card_sink_int[{{ i }}])
     `AXIS_ASSIGN(axis_card_src_int[{{ i }}], axis_card_src[{{ i }}])
+{% endfor %}
+
+{% endif %}
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+    // AXI direct read (Ryloth)
+{% for i in range(0, cnfg.n_direct_rd) %}
+    `AXI_ASSIGN(axi_drd_int[{{ i }}], axi_drd[{{ i }}])
 {% endfor %}
 
 {% endif %}
@@ -1052,6 +1103,9 @@ module design_user_wrapper_{{ c_reg }} (
     {% if cnfg.en_mem %}
         .axis_card_recv(axis_card_recv_int),
         .axis_card_send(axis_card_send_int),
+    {% endif %}
+    {% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
+        .axi_drd(axi_drd_int),
     {% endif %}
     {% if cnfg.en_rdma %}
         .axis_rreq_recv(axis_rdma_resp_int),

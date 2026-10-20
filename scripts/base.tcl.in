@@ -80,6 +80,8 @@ set cfg(ddr_frag)               ${DDR_FRAG}
 set cfg(hbm_size)               ${HBM_SIZE}
 set cfg(hbm_split)              ${HBM_SPLIT}
 set cfg(hbm_direct)             ${HBM_DIRECT}
+set cfg(n_direct_rd)            ${N_DIRECT_RD}
+set cfg(drd_hclk)               ${DRD_HCLK}
 set cfg(n_mem_chan)             ${N_MEM_CHAN}
 set cfg(n_ddr_chan)             ${N_DDR_CHAN}
 set cfg(n_tcp_chan)             ${N_TCP_CHAN}

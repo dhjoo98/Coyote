@@ -16,10 +16,18 @@
  *   active streams are issued round-robin through the single send queue. Every stream accepts data as fast as
  *   it arrives. DONE is set when every active stream has issued all requests and received N_BEATS beats.
  *   TIMER counts cycles from start to DONE; per-stream BEATS / T_LAST / ISSUED are read back through SEL.
+ *
+ * v3 (direct read ports, 2026-10-20): streams 0 .. N_CARD_AXI-1 are Coyote card streams as above; streams
+ * N_CARD_AXI .. N_CARD_AXI+N_DIRECT_RD-1 are direct read ports (axi_drd[k]), each driven by a drd_reader. For those,
+ * VADDR is a card physical address and every request is one drd_reader command of LEN bytes (no MMU, no sq_rd).
+ * N_DIRECT is read back at register 18.
  */
 
-localparam integer NS = N_CARD_AXI;
+localparam integer NC = N_CARD_AXI;
+localparam integer ND = N_DIRECT_RD;
+localparam integer NS = NC + ND;
 localparam integer SEL_BITS = (NS > 1) ? $clog2(NS) : 1;
+localparam integer RR_BITS = (NC > 1) ? $clog2(NC) : 1;
 
 // ---------------------------------------------------------------- CSRs
 logic [2:0]             ctrl;            // [0] start pulse, [1] advance mode, [2] physical card addresses (stage-2 TLB bypass)
@@ -50,7 +58,7 @@ probe_ctrl_parser inst_ctrl (
     .csr_n_reps(csr_n_reps), .csr_n_beats(csr_n_beats), .csr_pid(csr_pid), .csr_mask(csr_mask), .csr_sel_raw(csr_sel_raw),
     .st_done(st_done), .st_cq_cnt(st_cq_cnt), .st_timer(st_timer), .st_t_first(st_t_first),
     .st_beats_sel(st_beats_sel), .st_t_last_sel(st_t_last_sel), .st_issued_sel(st_issued_sel),
-    .st_n_streams(32'(NS)), .csr_lane(csr_lane), .st_csum_sel(st_csum_sel)
+    .st_n_streams(32'(NS)), .csr_lane(csr_lane), .st_csum_sel(st_csum_sel), .st_n_direct(32'(ND))
 );
 
 // ---------------------------------------------------------------- state
@@ -64,16 +72,18 @@ logic [63:0]            cur_vaddr [NS];
 logic [31:0]            issued    [NS];
 logic [63:0]            beats     [NS];
 logic [63:0]            t_last    [NS];
-logic [SEL_BITS-1:0]    rr;
+logic [RR_BITS-1:0]     rr;              // round-robin over the Coyote card streams only
 logic                   seen_first;
 logic [63:0]            vaddr_tab [NS];     // per-stream region base, written through SEL + VADDR
 assign csr_sel = csr_sel_raw[SEL_BITS-1:0];
 logic [NS-1:0]          beat_fire;
+logic [511:0]           beat_data [NS];
+logic [ND > 0 ? ND-1 : 0:0] drd_fire;     // a direct stream's command accepted this cycle
 
 wire start = ctrl[0] && !running;
 wire all_done = &(~active | (req_done & data_done));
 
-// request handshake for the stream currently pointed at by rr
+// request handshake for the Coyote card stream currently pointed at by rr
 wire rr_eligible = running && active[rr] && !req_done[rr];
 wire issue = rr_eligible && sq_rd.ready;
 
@@ -122,7 +132,16 @@ always_ff @(posedge aclk) begin
                 if (issued[rr] == csr_n_reps - 1) req_done[rr] <= 1'b1;
             end
             // round-robin pointer moves every cycle so a stalled or finished stream never blocks the others
-            rr <= (rr == SEL_BITS'(NS - 1)) ? '0 : rr + 1;
+            rr <= (rr == RR_BITS'(NC - 1)) ? '0 : rr + 1;
+
+            // direct read ports: one drd_reader command per request
+            for (int k = 0; k < ND; k++) begin
+                if (drd_fire[k]) begin
+                    issued[NC+k] <= issued[NC+k] + 1;
+                    if (advance) cur_vaddr[NC+k] <= cur_vaddr[NC+k] + 64'(csr_len);
+                    if (issued[NC+k] == csr_n_reps - 1) req_done[NC+k] <= 1'b1;
+                end
+            end
 
             // data side (beat_fire is a packed vector, so a variable index is legal here)
             if (|beat_fire && !seen_first) begin seen_first <= 1'b1; st_t_first <= st_timer; end
@@ -141,9 +160,30 @@ end
 
 // every active stream drains at line rate; inactive streams also drain so nothing can wedge the shell.
 // Interface arrays may only be indexed by constants, hence the generate loop and the packed beat_fire vector.
-for (genvar i = 0; i < NS; i++) begin : gen_card_recv
+for (genvar i = 0; i < NC; i++) begin : gen_card_recv
     assign axis_card_recv[i].tready = 1'b1;
     assign beat_fire[i] = axis_card_recv[i].tvalid && axis_card_recv[i].tready;
+    assign beat_data[i] = axis_card_recv[i].tdata;
+end
+
+// direct read ports: a drd_reader per port, data drained at line rate
+for (genvar k = 0; k < ND; k++) begin : gen_drd
+    logic cmd_valid, cmd_ready, tvalid, tlast, busy;
+    logic [511:0] tdata;
+    assign cmd_valid = running && active[NC+k] && !req_done[NC+k];
+    assign drd_fire[k] = cmd_valid && cmd_ready;
+    drd_reader #(.ADDR_BITS(DRD_ADDR_BITS), .MAX_OUT(32), .BURST_BEATS(16)) inst_drd (
+        .aclk(aclk), .aresetn(aresetn),
+        .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cur_vaddr[NC+k][DRD_ADDR_BITS-1:0]), .cmd_len(csr_len),
+        .cmd_last(issued[NC+k] == csr_n_reps - 1),
+        .m_axi(axi_drd[k]),
+        .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tready(1'b1), .busy(busy)
+    );
+    assign beat_fire[NC+k] = tvalid;
+    assign beat_data[NC+k] = tdata;
+end
+if (ND == 0) begin : gen_no_drd
+    assign drd_fire = '0;
 end
 
 // data check: per stream, eight 64-bit lane accumulators (sum mod 2^64 of word j of every beat). Keeps all 512 data
@@ -154,7 +194,7 @@ for (genvar i = 0; i < NS; i++) begin : g_csum
     always_ff @(posedge aclk) begin
         if (!aresetn || start) acc <= '0;
         else if (beat_fire[i]) begin
-            for (int j = 0; j < 8; j++) acc[j] <= acc[j] + axis_card_recv[i].tdata[64*j +: 64];
+            for (int j = 0; j < 8; j++) acc[j] <= acc[j] + beat_data[i][64*j +: 64];
         end
     end
     assign csum_mux[i] = acc[csr_lane];
@@ -167,7 +207,7 @@ assign st_t_last_sel = t_last[csr_sel];
 assign st_issued_sel = issued[csr_sel];
 
 // ---------------------------------------------------------------- tie-offs
-for (genvar i = 0; i < NS; i++) begin : gen_card_send_tieoff
+for (genvar i = 0; i < NC; i++) begin : gen_card_send_tieoff
     assign axis_card_send[i].tvalid = 1'b0;
     assign axis_card_send[i].tdata  = '0;
     assign axis_card_send[i].tkeep  = '0;
