@@ -356,6 +356,19 @@ void cThread::munmapFpga() {
 	wback = 0;
 }
 
+std::vector<uint64_t> cThread::getCardPaddr(void *vaddr, bool &huge, uint64_t max_pages) {
+    std::vector<uint64_t> buf(2 + max_pages, 0);
+    buf[0] = reinterpret_cast<uint64_t>(vaddr);
+    buf[1] = static_cast<uint64_t>(ctid);
+    buf[2] = max_pages;
+    if (ioctl(fd, IOCTL_GET_CARD_PADDR, buf.data())) {
+        throw std::runtime_error("ERROR: IOCTL_GET_CARD_PADDR failed (buffer not mapped on the card, or old driver)");
+    }
+    uint64_t n = std::min<uint64_t>(buf[0], max_pages);
+    huge = buf[1] != 0;
+    return std::vector<uint64_t>(buf.begin() + 2, buf.begin() + 2 + n);
+}
+
 void cThread::userMap(void *vaddr, uint32_t len, int32_t mem_block) {
     DBG1("cThread: Called userMap to map user buffer, vaddr " << vaddr << ", length " << len << ", mem_block " << mem_block << " and ctid " << ctid);
 

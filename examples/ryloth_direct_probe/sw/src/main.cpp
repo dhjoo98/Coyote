@@ -31,7 +31,7 @@ int main(int argc, char *argv[]) {
     unsigned n_streams_req, n_runs, reps, first;
     uint64_t region, len;
     double aclk_mhz;
-    bool advance, windows;
+    bool advance, windows, phys;
     boost::program_options::options_description opts("Ryloth direct-HBM probe");
     opts.add_options()
         ("help,h", "print this help")
@@ -42,6 +42,7 @@ int main(int argc, char *argv[]) {
         ("reps,n", boost::program_options::value<unsigned>(&reps)->default_value(0), "requests per stream (0 = region / len)")
         ("advance,a", boost::program_options::value<bool>(&advance)->default_value(true), "sequential scan of the region (else re-read the same address)")
         ("windows,w", boost::program_options::value<bool>(&windows)->default_value(true), "place region i in card window i+1 (mem_block); 0 = first-free")
+        ("phys,p", boost::program_options::value<bool>(&phys)->default_value(false), "stage 2: issue physical card reads (TLB bypass); needs the direct-HBM driver and a stage-2 shell")
         ("runs,r", boost::program_options::value<unsigned>(&n_runs)->default_value(5), "repetitions")
         ("aclk", boost::program_options::value<double>(&aclk_mhz)->default_value(150.0), "ACLK in MHz (timer clock)");
     boost::program_options::variables_map vm;
@@ -75,13 +76,34 @@ int main(int argc, char *argv[]) {
         t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);     // blocking: the driver migrates the pages to the card
     }
 
+    // stage 2: the vFPGA reads physical window offsets; each region must be physically contiguous on the card
+    std::vector<uint64_t> bases(S, 0);
+    if (phys) {
+        for (unsigned k = 0; k < S; k++) {
+            bool huge = false;
+            std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge);
+            const uint64_t pgsz = huge ? (2ull << 20) : 4096ull;
+            if (pg.empty()) { std::cerr << "stream " << first + k << ": no card pages" << std::endl; return 4; }
+            for (size_t j = 1; j < pg.size(); j++) {
+                if (pg[j] != pg[0] + j * pgsz) {
+                    std::cerr << "stream " << first + k << ": region not physically contiguous at page " << j
+                              << " (" << std::hex << pg[j] << " vs " << pg[0] + j * pgsz << std::dec << "); use a smaller --region" << std::endl;
+                    return 4;
+                }
+            }
+            bases[k] = pg[0];
+            std::cout << "stream " << first + k << ": card paddr 0x" << std::hex << pg[0] << std::dec << " (window " << (pg[0] >> 30) << "), "
+                      << pg.size() << (huge ? " huge" : " regular") << " pages" << std::endl;
+        }
+    }
+
     uint64_t mask = 0;
     for (unsigned k = 0; k < S; k++) mask |= 1ull << (first + k);
 
     for (unsigned run = 0; run < n_runs; run++) {
         for (unsigned k = 0; k < S; k++) {               // per-stream base: SEL then VADDR
             t.setCSR(first + k, R_SEL);
-            t.setCSR(reinterpret_cast<uint64_t>(regions[k]), R_VADDR);
+            t.setCSR(phys ? bases[k] : reinterpret_cast<uint64_t>(regions[k]), R_VADDR);
         }
         t.setCSR(0, R_STRIDE);
         t.setCSR(len, R_LEN);
@@ -89,7 +111,7 @@ int main(int argc, char *argv[]) {
         t.setCSR(beats_per_stream, R_N_BEATS);
         t.setCSR(static_cast<uint64_t>(t.getCtid()), R_PID);
         t.setCSR(mask, R_MASK);
-        t.setCSR(1ull | (advance ? 2ull : 0ull), R_CTRL);
+        t.setCSR(1ull | (advance ? 2ull : 0ull) | (phys ? 4ull : 0ull), R_CTRL);
         auto t0 = std::chrono::steady_clock::now();
         while (!(t.getCSR(R_STATUS) & 1ull)) {
             if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > 30.0) {

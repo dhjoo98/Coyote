@@ -4,7 +4,7 @@
  * examples/07_perf_fpga/perf_fpga_axi_ctrl_parser.sv, kept verbatim.
  *
  * Map (64-bit registers, byte offset = index * 8):
- *   0  CTRL       w  [0] start (self-clearing pulse), [1] advance (vaddr += len per request within a stream)
+ *   0  CTRL       w  [0] start (self-clearing pulse), [1] advance (vaddr += len per request within a stream), [2] phys (stage-2 TLB bypass)
  *   1  STATUS     r  [0] done, [63:32] completions seen on cq_rd
  *   2  TIMER      r  cycles from start to done (ACLK)
  *   3  VADDR      w  base address of stream SEL's region (write SEL first; one entry per stream)
@@ -30,7 +30,7 @@ module probe_ctrl_parser (
 
   AXI4L.s                             axi_ctrl,
 
-  output logic [1:0]                  ctrl,
+  output logic [2:0]                  ctrl,
   output logic [63:0]                 csr_vaddr,
   output logic                        csr_vaddr_we,   // one-cycle strobe after a VADDR write (host writes SEL first)
   output logic [63:0]                 csr_stride,
@@ -135,7 +135,7 @@ end
 
 // ---------------------------------------------------------------- outputs
 always_comb begin
-  ctrl        = ctrl_reg[R_CTRL][1:0];
+  ctrl        = ctrl_reg[R_CTRL][2:0];
   csr_vaddr   = ctrl_reg[R_VADDR];
   csr_stride  = ctrl_reg[R_STRIDE];
   csr_len     = ctrl_reg[R_LEN][31:0];

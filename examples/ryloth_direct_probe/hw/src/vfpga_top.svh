@@ -9,7 +9,7 @@
  *
  * Protocol (AXI-Lite CSRs, see probe_ctrl_parser.sv):
  *   for each stream: write SEL then VADDR; then LEN, N_REPS, N_BEATS, PID, STREAM_MASK, then CTRL (bit 0 = start,
- *   bit 1 = advance).
+ *   bit 1 = advance, bit 2 = physical card addresses for a stage-2 shell).
  *   Stream i issues N_REPS LOCAL_READ requests of LEN bytes from its own base (VADDR written with SEL = i; one
  *   entry per stream) (+ k*LEN per request k when advance is set, i.e. a sequential scan of its region) with
  *   dest = i, strm = STRM_CARD. Requests of the
@@ -22,7 +22,7 @@ localparam integer NS = N_CARD_AXI;
 localparam integer SEL_BITS = (NS > 1) ? $clog2(NS) : 1;
 
 // ---------------------------------------------------------------- CSRs
-logic [1:0]             ctrl;            // [0] start pulse, [1] advance mode
+logic [2:0]             ctrl;            // [0] start pulse, [1] advance mode, [2] physical card addresses (stage-2 TLB bypass)
 logic [63:0]            csr_vaddr;
 logic                   csr_vaddr_we;
 logic [63:0]            csr_stride;      // unused: per-stream table below
@@ -54,6 +54,7 @@ probe_ctrl_parser inst_ctrl (
 // ---------------------------------------------------------------- state
 logic                   running;
 logic                   advance;
+logic                   phys;            // requests carry req.rsrvd[0] = 1: the shell's tlb_fsm bypasses the TLB (stage 2)
 logic [NS-1:0]          active;
 logic [NS-1:0]          req_done;
 logic [NS-1:0]          data_done;
@@ -86,11 +87,12 @@ always_comb begin
     sq_rd.data.pid    = csr_pid;
     sq_rd.data.opcode = LOCAL_READ;
     sq_rd.data.last   = (issued[rr] == csr_n_reps - 1);
+    sq_rd.data.rsrvd  = phys;        // zero-extended: rsrvd[0] = physical card address (ignored by a stage-1 shell)
 end
 
 always_ff @(posedge aclk) begin
     if (!aresetn) begin
-        running <= 1'b0; advance <= 1'b0; active <= '0; req_done <= '0; data_done <= '0;
+        running <= 1'b0; advance <= 1'b0; phys <= 1'b0; active <= '0; req_done <= '0; data_done <= '0;
         rr <= '0; st_timer <= '0; st_cq_cnt <= '0; st_done <= 1'b0; st_t_first <= '0; seen_first <= 1'b0;
         for (int i = 0; i < NS; i++) begin
             cur_vaddr[i] <= '0; issued[i] <= '0; beats[i] <= '0; t_last[i] <= '0; vaddr_tab[i] <= '0;
@@ -98,7 +100,7 @@ always_ff @(posedge aclk) begin
     end else begin
         if (csr_vaddr_we && !running) vaddr_tab[csr_sel] <= csr_vaddr;
         if (start) begin
-            running <= 1'b1; advance <= ctrl[1]; st_done <= 1'b0; st_timer <= '0; st_cq_cnt <= '0;
+            running <= 1'b1; advance <= ctrl[1]; phys <= ctrl[2]; st_done <= 1'b0; st_timer <= '0; st_cq_cnt <= '0;
             st_t_first <= '0; seen_first <= 1'b0; rr <= '0;
             for (int i = 0; i < NS; i++) begin
                 active[i]    <= csr_mask[i];

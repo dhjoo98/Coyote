@@ -214,6 +214,12 @@ protected:
 	void userMap(void *vaddr, uint32_t len, int32_t mem_block = -1);
 
 	/**
+	 * @brief Ryloth direct-HBM: card physical addresses of the pages of a buffer mapped by this thread
+	 * (needs the ryloth/direct-hbm-driver driver). Returns the page addresses (4 KiB or 2 MiB pages, see huge).
+	 */
+	std::vector<uint64_t> getCardPaddr(void *vaddr, bool &huge, uint64_t max_pages = 16384);
+
+	/**
 	 * @brief Unmaps a buffer from the the vFPGAs TLB
 	 *
 	 * @param vaddr Virtual address of the buffer
