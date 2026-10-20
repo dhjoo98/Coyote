@@ -58,6 +58,7 @@ logic [DEST_BITS-1:0] dest_C, dest_N;
 logic [STRM_BITS-1:0] strm_C, strm_N;
 logic last_C, last_N;
 logic host_C, host_N;
+logic [$bits(s_req.data.rsrvd)-1:0] rsrvd_C, rsrvd_N; // Ryloth direct-HBM: rsrvd[0] = physical card address flag, carried to the MMU
 logic actv_C, actv_N;
 logic [LEN_BITS-1:0] len_C, len_N;
 logic [VADDR_BITS-1:0] vaddr_C, vaddr_N;
@@ -81,6 +82,7 @@ if (aresetn == 1'b0) begin
     strm_C <= 'X;
     last_C <= 'X;
     host_C <= 'X;
+    rsrvd_C <= '0;
     actv_C <= 'X;
     len_C <= 'X;
     vaddr_C <= 'X;
@@ -102,6 +104,7 @@ else
     strm_C <= strm_N;
     last_C <= last_N;
     host_C <= host_N;
+    rsrvd_C <= rsrvd_N;
     actv_C <= actv_N;
     len_C <= len_N;
     vaddr_C <= vaddr_N;
@@ -143,6 +146,7 @@ always_comb begin: DP
     strm_N = strm_C;
     last_N = last_C;
     host_N = host_C;
+    rsrvd_N = rsrvd_C;
     actv_N = actv_C;
     len_N = len_C;
     vaddr_N = vaddr_C;
@@ -170,7 +174,7 @@ always_comb begin: DP
     m_req.data.offs = 0;
     m_req.data.vaddr = pvaddr_C;
     m_req.data.len = plen_C;
-    m_req.data.rsrvd = 0;
+    m_req.data.rsrvd = rsrvd_C;
 
     case(state_C)
         ST_IDLE: begin
@@ -186,6 +190,7 @@ always_comb begin: DP
                 strm_N = s_req.data.strm;
                 last_N = s_req.data.last;
                 host_N = s_req.data.host;
+                rsrvd_N = s_req.data.rsrvd;
                 actv_N = s_req.data.actv;
                 len_N = s_req.data.len;
                 vaddr_N = s_req.data.vaddr;

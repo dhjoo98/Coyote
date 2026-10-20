@@ -135,6 +135,17 @@ logic host_C, host_N;
 logic phys_C, phys_N; // Ryloth direct-HBM: STRM_CARD request carries a physical card address (req.rsrvd[0]); TLB bypassed
 logic [VADDR_BITS-1:0] phys_delta;    // bytes to the next 2 MiB boundary, chunking as the large-page path
 assign phys_delta = PG_L_SIZE - vaddr_C[PG_L_BITS-1:0];
+// fast path: a physical STRM_CARD request skips the TLB mutex, lookup and fault handling entirely
+logic phys_s_req, phys_cch, phys_cur;
+`ifdef EN_MEM
+assign phys_s_req = s_req.data.rsrvd[0] && (s_req.data.strm == STRM_CARD);
+assign phys_cch   = cch_buff_src.data.rsrvd[0] && (cch_buff_src.data.strm == STRM_CARD);
+assign phys_cur   = phys_C && (strm_C == STRM_CARD);
+`else
+assign phys_s_req = 1'b0;
+assign phys_cch   = 1'b0;
+assign phys_cur   = 1'b0;
+`endif
 
 // TLB data
 logic [TLB_L_DATA_BITS-1:0] data_l_C, data_l_N;
@@ -387,12 +398,20 @@ always_comb begin: NSL
             end
 			else if(cch_buff_src.valid) begin
 				if(cch_buff_src.data.len != 0) begin
+`ifdef EN_MEM
+					state_N = phys_cch ? ST_CALC_PHYS : ST_MUTEX;
+`else
 					state_N = ST_MUTEX;
+`endif
 				end
 			end
             else if(s_req.valid) begin
                 if(s_req.data.len != 0) begin
+`ifdef EN_MEM
+                    state_N = phys_s_req ? ST_CALC_PHYS : ST_MUTEX;
+`else
                     state_N = ST_MUTEX;
+`endif
                 end
             end
         end
@@ -583,10 +602,10 @@ always_comb begin: NSL
 		ST_CARD_SEND:
     `ifdef MULT_CARD_AXI
         if(ddma_ready[ccurr_dest] && (!issued_card_C[ccurr_dest] || (head_card_C[ccurr_dest] != tail_card_C[ccurr_dest])))
-                state_N = len_C ? ST_MUTEX : ST_IDLE; 
+                state_N = len_C ? (phys_cur ? ST_CALC_PHYS : ST_MUTEX) : ST_IDLE; 
     `else
         if(ddma_ready[0] && (!issued_card_C[0] || (head_card_C[0] != tail_card_C[0])))
-                state_N = len_C ? ST_MUTEX : ST_IDLE;    
+                state_N = len_C ? (phys_cur ? ST_CALC_PHYS : ST_MUTEX) : ST_IDLE;    
     `endif   
 `endif
 		
@@ -804,8 +823,8 @@ always_comb begin: DP
                 cch_size_N = cch_size_C - 1;
 
 				if(cch_buff_src.data.len != 0) begin
-					// Lock the mutex (next state)
-					lock = 1'b1;
+					// Lock the mutex (next state); not for physical card requests (no TLB access)
+					lock = !phys_cch;
 
 					// Latch the request
 					pid_N = cch_buff_src.data.pid;
@@ -833,8 +852,8 @@ always_comb begin: DP
                 s_req.ready = 1'b1;
 
 				if(s_req.data.len != 0) begin
-					// Lock the mutex
-					lock = 1'b1;
+					// Lock the mutex; not for physical card requests (no TLB access)
+					lock = !phys_s_req;
 
 					// Request
 					pid_N = s_req.data.pid;
