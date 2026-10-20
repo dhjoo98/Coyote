@@ -37,7 +37,7 @@ int main(int argc, char *argv[]) {
     unsigned n_streams_req, n_runs, reps, first;
     uint64_t region, len;
     double aclk_mhz;
-    bool advance, windows, phys;
+    bool advance, windows, phys, datacheck;
     boost::program_options::options_description opts("Ryloth direct-HBM probe");
     opts.add_options()
         ("help,h", "print this help")
@@ -48,6 +48,7 @@ int main(int argc, char *argv[]) {
         ("reps,n", boost::program_options::value<unsigned>(&reps)->default_value(0), "requests per stream (0 = region / len)")
         ("advance,a", boost::program_options::value<bool>(&advance)->default_value(true), "sequential scan of the region (else re-read the same address)")
         ("windows,w", boost::program_options::value<bool>(&windows)->default_value(true), "place region i in card window i+1 (mem_block); 0 = first-free")
+        ("datacheck,d", boost::program_options::value<bool>(&datacheck)->default_value(true), "verify lane sums (probe v2 bitstreams only; use 0 with the probe15 v1 partial, whose 16-register map aliases register 16 onto CTRL)")
         ("phys,p", boost::program_options::value<bool>(&phys)->default_value(false), "stage 2: issue physical card reads (TLB bypass); needs the direct-HBM driver and a stage-2 shell")
         ("runs,r", boost::program_options::value<unsigned>(&n_runs)->default_value(5), "repetitions")
         ("aclk", boost::program_options::value<double>(&aclk_mhz)->default_value(150.0), "ACLK in MHz (timer clock)");
@@ -154,6 +155,7 @@ int main(int argc, char *argv[]) {
             std::cout << " " << std::setprecision(2) << (beats_per_stream * 64.0) / t_last / 1e9;
         }
         std::cout << " GB/s" << std::endl;
+        if (!datacheck) continue;
         unsigned bad = 0;
         for (unsigned k = 0; k < S; k++) {
             t.setCSR(first + k, R_SEL);
