@@ -94,6 +94,10 @@ set(DDR_FRAG 1024 CACHE STRING "Stripe fragment size")
 # Concatenate HBM bank ports to achieve higher throughput
 set(HBM_SPLIT 0 CACHE STRING "HBM bank splitting")
 
+# Ryloth direct-HBM (2026-10-20): RAMA interleaving off, so each shell memory port stays in the pseudo-channel its
+# address selects (card address window i = PC i of each stack); the authors' block-HBM recipe for UltraScale+ (#209)
+set(HBM_DIRECT 0 CACHE STRING "Direct HBM: no RAMA striping, one pseudo-channel per port window")
+
 set(DATA_DEST_BITS 4 CACHE STRING "Number of bits used to address the coyote stream index.")
 set(VADDR_BITS 48 CACHE STRING "Bits of a virtual address used e.g. in the MMU.")
 
