@@ -502,8 +502,9 @@ long vfpga_dev_ioctl(struct file *file, unsigned int command, unsigned long arg)
         // Return: Various (compile-time) shell parameters (EN_RDMA, EN_MEM, etc.)
         // Ryloth direct-HBM: report the card physical pages of a mapped user buffer, so the host can issue
         // physical (TLB-bypassing) card reads. In: tmp[0] = vaddr, tmp[1] = ctid, tmp[2] = max pages the user
-        // buffer can take. Out (same buffer): [0] = n_pages of the mapping, [1] = huge (page size 2 MiB if 1,
-        // 4 KiB if 0), [2 .. 2+min(n_pages, max)-1] = card physical address of each page.
+        // buffer can take. Out (same buffer): [0] = n_pages of the mapping (4 KiB pages, also for huge-page buffers),
+        // [1] = huge (buffer backed by huge pages), [2 .. 2+min(n_pages, max)-1] = card physical address of each 4 KiB
+        // page. tmp[0] must be the buffer start (the lookup uses the hash bucket of the first page, like unmap).
         case IOCTL_GET_CARD_PADDR:
             ret_val = copy_from_user(&tmp, (unsigned long *) arg, 3 * sizeof(unsigned long));
             if (ret_val != 0) {

@@ -195,6 +195,26 @@ int allocate_card_resources(struct bus_driver_data *data) {
         data->card_sblocks[i].alloc = &data->card_sblocks[i].chunks[0];
     }
 
+#if defined(PLATFORM_ULTRASCALE_PLUS) && defined(MEM_RSVD_BYTES)
+    // Ryloth direct-HBM: keep the shell's reserved card segment [MEM_START, MEM_START + MEM_RSVD_BYTES) out of the
+    // allocators (it lies at the start of block 0: the regular pool, then the start of the huge pool)
+    {
+        uint64_t pg = data->stlb_meta->page_size;
+        uint64_t s_rsvd = MEM_RSVD_BYTES / pg; if (s_rsvd > N_SMALL_CHUNKS) s_rsvd = N_SMALL_CHUNKS;
+        uint64_t l_rsvd = (MEM_RSVD_BYTES > N_SMALL_CHUNKS * pg) ? (MEM_RSVD_BYTES - N_SMALL_CHUNKS * pg) / pg : 0;
+        uint64_t j;
+        if (l_rsvd > N_LARGE_CHUNKS) l_rsvd = N_LARGE_CHUNKS;
+        for (j = 0; j < s_rsvd; j++) data->card_sblocks[0].chunks[j].used = true;
+        for (j = 0; j < l_rsvd; j++) data->card_lblocks[0].chunks[j].used = true;
+        data->card_sblocks[0].free_chunks -= s_rsvd;
+        data->card_lblocks[0].free_chunks -= l_rsvd;
+        if (s_rsvd < N_SMALL_CHUNKS) data->card_sblocks[0].alloc = &data->card_sblocks[0].chunks[s_rsvd];
+        if (l_rsvd < N_LARGE_CHUNKS) data->card_lblocks[0].alloc = &data->card_lblocks[0].chunks[l_rsvd];
+        dbg_info("direct-HBM: %d card blocks of %lu MiB; reserved %llu regular + %llu huge-pool chunks of block 0\n",
+                 N_MEM_BLOCKS, MEM_BLOCK_SIZE >> 20, s_rsvd, l_rsvd);
+    }
+#endif
+
     goto end;
 
 err_alloc_schunks:

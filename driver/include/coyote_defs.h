@@ -340,12 +340,16 @@ extern bool en_hmm;
     // the shell's sync DMA, port j+1 = user card stream j) is local to that pseudo-channel. A buffer mapped with
     // mem_block = j is therefore placed where card stream j-1 reads it without crossing the HBM switch (requires
     // the shell built with HBM_DIRECT=1, i.e. RAMA interleaving off). mem_block = -1 keeps first-free placement.
-    // Per block: 4096 regular 4 KiB chunks (16 MiB) then 504 huge 2 MiB chunks (1008 MiB) = 1 GiB.
+    // Chunks are 4 KiB in BOTH pools (the huge-page pool is allocated in runs of 4 KiB chunks; address =
+    // chunk id << 12 + pool offset + block * MEM_BLOCK_SIZE + MEM_START). Per block: 4,096 regular chunks (16 MiB)
+    // followed by 258,048 huge-pool chunks (1008 MiB) = 1 GiB. The shell's reserved segment [0, 256 MiB) of the
+    // original layout (MEM_START 256 MiB) lies in block 0 and is marked used at setup (MEM_RSVD_BYTES).
     #define N_MEM_BLOCKS 16
     #define MEM_BLOCK_SIZE (1024UL * 1024UL * 1024UL)
     #define MEM_START (0UL)
     #define N_SMALL_CHUNKS (4096UL)
-    #define N_LARGE_CHUNKS (504UL)
+    #define N_LARGE_CHUNKS (258048UL)
+    #define MEM_RSVD_BYTES (256UL * 1024UL * 1024UL)
 #endif
 
 // On Versal devices, users have fine-grained control over the HBM bank 
