@@ -206,6 +206,7 @@ enum class CnfgLegRegs : uint32_t {
 #define CTRL_LAST                           (1UL << 20)
 #define CTRL_START                          (1UL << 21)
 #define CTRL_CLR_STAT                       (1UL << 22)
+#define CTRL_PHYS                           (1UL << 23)   // Ryloth direct-HBM: card address is physical (TLB bypass)
 #define CTRL_LEN_OFFS                       (32)
 
 #define CTRL_OPCODE_MASK                    (0x1f)

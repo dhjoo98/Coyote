@@ -108,7 +108,7 @@ localparam integer ACK_BUFFER_SIZE = 2 + STRM_BITS + DEST_BITS + PID_BITS;
 // -- FSM ---------------------------------------------------------------------------------------------------
 typedef enum logic[4:0] {ST_IDLE, ST_LOCKED,
                          ST_MUTEX, ST_WAIT_1, ST_WAIT_2, ST_CHECK,
-					     ST_HIT_LARGE, ST_HIT_SMALL, ST_CALC_LARGE, ST_CALC_SMALL, // timing extra states
+					     ST_HIT_LARGE, ST_HIT_SMALL, ST_CALC_LARGE, ST_CALC_SMALL, ST_CALC_PHYS, // timing extra states; ST_CALC_PHYS = Ryloth direct-HBM TLB bypass
 `ifdef EN_STRM
                          ST_INVLDT_HOST, ST_INVLDT_LUP_HOST, ST_INVLDT_WAIT_HOST, ST_INVLDT_CMP_HOST,
                          ST_HOST_SEND,
@@ -132,6 +132,9 @@ logic [DEST_BITS-1:0] dest_C, dest_N;
 logic [PID_BITS-1:0] pid_C, pid_N;
 logic val_C, val_N;
 logic host_C, host_N;
+logic phys_C, phys_N; // Ryloth direct-HBM: STRM_CARD request carries a physical card address (req.rsrvd[0]); TLB bypassed
+logic [VADDR_BITS-1:0] phys_delta;    // bytes to the next 2 MiB boundary, chunking as the large-page path
+assign phys_delta = PG_L_SIZE - vaddr_C[PG_L_BITS-1:0];
 
 // TLB data
 logic [TLB_L_DATA_BITS-1:0] data_l_C, data_l_N;
@@ -265,6 +268,7 @@ always_ff @(posedge aclk) begin: PROC_REG
         last_C <= 'X;
         strm_C <= 'X;
         host_C <= 'X;
+        phys_C <= 1'b0;
         dest_C <= 'X;
         pid_C <= 'X;
         val_C <= 1'b0;
@@ -314,6 +318,7 @@ always_ff @(posedge aclk) begin: PROC_REG
         last_C <= last_N;
         strm_C <= strm_N;
         host_C <= host_N;
+        phys_C <= phys_N;
         dest_C <= dest_N;
         pid_C <= pid_N;
         val_C <= val_N;
@@ -517,6 +522,12 @@ always_comb begin: NSL
 
 		// Check hits
 		ST_CHECK: begin
+`ifdef EN_MEM
+            if(phys_C && (strm_C == STRM_CARD)) begin
+                state_N = ST_CALC_PHYS;   // Ryloth direct-HBM: no translation for physical card requests
+            end
+            else
+`endif
             if(hit) begin
                 state_N = lTlb.hit ? ST_HIT_LARGE : ST_HIT_SMALL;    
             end
@@ -567,6 +578,8 @@ always_comb begin: NSL
 `endif
 
 `ifdef EN_MEM
+		ST_CALC_PHYS:
+			state_N = ST_CARD_SEND;
 		ST_CARD_SEND:
     `ifdef MULT_CARD_AXI
         if(ddma_ready[ccurr_dest] && (!issued_card_C[ccurr_dest] || (head_card_C[ccurr_dest] != tail_card_C[ccurr_dest])))
@@ -627,6 +640,7 @@ always_comb begin: DP
 	last_N = last_C;
 	strm_N = strm_C;
     host_N = host_C;
+    phys_N = phys_C;
 	dest_N = dest_C;
 	pid_N = pid_C;
 	val_N = 1'b0;
@@ -798,6 +812,7 @@ always_comb begin: DP
 					dest_N = cch_buff_src.data.dest;
 					last_N = cch_buff_src.data.last;
                     host_N = cch_buff_src.data.host;
+                    phys_N = cch_buff_src.data.rsrvd[0];
             `ifdef EN_STRM
                 `ifdef EN_MEM
 					strm_N = cch_buff_src.data.strm;
@@ -826,6 +841,7 @@ always_comb begin: DP
 					dest_N = s_req.data.dest;
 					last_N = s_req.data.last;
                     host_N = s_req.data.host;
+                    phys_N = s_req.data.rsrvd[0];
 			`ifdef EN_STRM
                 `ifdef EN_MEM
 					strm_N = s_req.data.strm;
@@ -942,7 +958,7 @@ always_comb begin: DP
         end
 
 		ST_CHECK: begin
-            if(hit) begin
+            if(hit || (phys_C && (strm_C == STRM_CARD))) begin
                 unlock_N = 1'b1;
             end
             else begin
@@ -990,6 +1006,22 @@ always_comb begin: DP
 			end
 		end
 
+`ifdef EN_MEM
+        // Ryloth direct-HBM: the request's vaddr IS the card physical address (a window offset the host obtained from the
+        // driver); emitted in chunks of at most 2 MiB like the large-page path, no TLB access, no fault path
+        ST_CALC_PHYS: begin
+            paddr_N = vaddr_C[PADDR_BITS-1:0];
+            if(len_C > phys_delta) begin
+                plen_N = phys_delta;
+                len_N = len_C - phys_delta;
+                vaddr_N = vaddr_C + phys_delta;
+            end
+            else begin
+                plen_N = len_C;
+                len_N = 0;
+            end
+        end
+`endif
 `ifdef EN_STRM
 		ST_HOST_SEND: begin
             if(hdma_ready && (!issued_host_C || (head_host_C != tail_host_C))) begin

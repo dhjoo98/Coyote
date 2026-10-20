@@ -168,6 +168,9 @@ struct localSg {
 
     /// Target AXI4 destination stream in the vFPGA; a value of i will use the to axis_(host|card)_(recv|send)[i] in the vFPGA
     uint32_t dest = { 0 };
+
+    /// Ryloth direct-HBM: addr is a physical card address (window offset); the shell's TLB is bypassed (STRM_CARD only)
+    bool phys = { false };
 };
 
 /** 

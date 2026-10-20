@@ -419,7 +419,7 @@ package lynxTypes;
         logic host; // rsrvd
         logic [OFFS_BITS-1:0] offs; // rsrvd
 
-        logic [128-OFFS_BITS-2-VADDR_BITS-LEN_BITS-1-2*DEST_BITS-PID_BITS-3-STRM_BITS-OPCODE_BITS-1:0] rsrvd;
+        logic [128-OFFS_BITS-2-VADDR_BITS-LEN_BITS-1-2*DEST_BITS-PID_BITS-3-STRM_BITS-OPCODE_BITS-1:0] rsrvd; // rsrvd[0]: Ryloth direct-HBM, STRM_CARD request with a physical card address (tlb_fsm bypasses the TLB; host control word bit 23)
     } req_t;
 
     typedef struct packed {

@@ -280,6 +280,7 @@ localparam integer CTRL_REG                                 = 0;
     localparam integer CTRL_LAST_OFFS       = 20;
     localparam integer CTRL_ACTV_OFFS       = 21;
     localparam integer CTRL_CLR_STAT        = 22;
+    localparam integer CTRL_PHYS_OFFS       = 23; // Ryloth direct-HBM: STRM_CARD address is physical (TLB bypass)
     localparam integer CTRL_LEN_OFFS        = 32;
     localparam integer CTRL_VADDR_OFFS      = 64;
     localparam integer WR_OFFS              = 128;
@@ -1052,7 +1053,7 @@ assign host_req.data.req_1.host         = 1'b1; // RSRVD
 assign host_req.data.req_1.vaddr        = slv_reg[CTRL_REG][CTRL_VADDR_OFFS+:VADDR_BITS];
 assign host_req.data.req_1.len          = slv_reg[CTRL_REG][CTRL_LEN_OFFS+:LEN_BITS];
 assign host_req.data.req_1.offs         = 0;
-assign host_req.data.req_1.rsrvd        = 0;
+assign host_req.data.req_1.rsrvd        = slv_reg[CTRL_REG][CTRL_PHYS_OFFS]; // rsrvd[0] = phys (zero-extended)
 
 assign host_req.data.req_2.opcode       = slv_reg[CTRL_REG][WR_OFFS+CTRL_OPCODE_OFFS+:OPCODE_BITS];
 assign host_req.data.req_2.strm         = slv_reg[CTRL_REG][WR_OFFS+CTRL_STRM_OFFS+:STRM_BITS];

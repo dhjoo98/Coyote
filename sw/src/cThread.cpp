@@ -673,7 +673,7 @@ void cThread::invoke(CoyoteOper oper, localSg sg, bool last) {
             (last ? CTRL_LAST : 0x0) |
             ((sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (0x0) | 
+            (sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(sg.len) << CTRL_LEN_OFFS);
         
         uint64_t addr_cmd_src = reinterpret_cast<uint64_t>(sg.addr);
@@ -687,7 +687,7 @@ void cThread::invoke(CoyoteOper oper, localSg sg, bool last) {
             (last ? CTRL_LAST : 0x0) |
             ((sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (0x0) | 
+            (sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(sg.len) << CTRL_LEN_OFFS);
 
         uint64_t addr_cmd_dst = reinterpret_cast<uint64_t>(sg.addr);
@@ -728,7 +728,7 @@ void cThread::invoke(CoyoteOper oper, localSg src_sg, localSg dst_sg, bool last)
             (last ? CTRL_LAST : 0x0) |
             ((src_sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (0x0) | 
+            (src_sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(src_sg.len) << CTRL_LEN_OFFS);
 
         uint64_t ctrl_cmd_dst =
@@ -737,7 +737,7 @@ void cThread::invoke(CoyoteOper oper, localSg src_sg, localSg dst_sg, bool last)
             (last ? CTRL_LAST : 0x0) |
             ((dst_sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (0x0) | 
+            (dst_sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(dst_sg.len) << CTRL_LEN_OFFS);
 
         uint64_t addr_cmd_src = reinterpret_cast<uint64_t>(src_sg.addr);
