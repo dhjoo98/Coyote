@@ -335,15 +335,17 @@ extern bool en_hmm;
 // there is no fine-grained control over the memory bank to which a buffer is
 // allocated; that is N_MEM_BLOCKS is equal to 1
 #ifdef PLATFORM_ULTRASCALE_PLUS
-    #define N_MEM_BLOCKS 1
-    #define MEM_BLOCK_SIZE 0    // doesn't matter; effectively unused in this case but needed to compile
-    #define MEM_START (256UL * 1024UL * 1024UL) //start address 256MB, 0-256MB segment is for shell.
-    //regular pages are 4KB in size.
-    #define N_SMALL_CHUNKS (98304UL)                  // 384 MiB (halved from 768 MiB to expand large-page pool)
-    //#define N_SMALL_CHUNKS (1024UL * 1024UL)
-    // huge pages are 2MB in size.
-    #define N_LARGE_CHUNKS (4030464UL)                // 15.375 GiB (expanded from 15 GiB; total budget preserved)
-    //#define N_LARGE_CHUNKS (1024UL * 1024UL)
+    // Ryloth direct-HBM (2026-10-20): the 16 GiB HBM is managed as 16 blocks of 1 GiB. With the shell's hbm_wide
+    // pairing, card addresses [j GiB, (j+1) GiB) live in pseudo-channel j of both stacks, and HBM port j (port 0 =
+    // the shell's sync DMA, port j+1 = user card stream j) is local to that pseudo-channel. A buffer mapped with
+    // mem_block = j is therefore placed where card stream j-1 reads it without crossing the HBM switch (requires
+    // the shell built with HBM_DIRECT=1, i.e. RAMA interleaving off). mem_block = -1 keeps first-free placement.
+    // Per block: 4096 regular 4 KiB chunks (16 MiB) then 504 huge 2 MiB chunks (1008 MiB) = 1 GiB.
+    #define N_MEM_BLOCKS 16
+    #define MEM_BLOCK_SIZE (1024UL * 1024UL * 1024UL)
+    #define MEM_START (0UL)
+    #define N_SMALL_CHUNKS (4096UL)
+    #define N_LARGE_CHUNKS (504UL)
 #endif
 
 // On Versal devices, users have fine-grained control over the HBM bank 

@@ -284,7 +284,7 @@ void free_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         for (int i = n_pages - 1; i >= 0; i--) {
             // Find the block to which the page was stored 
             #ifdef PLATFORM_ULTRASCALE_PLUS
-                int32_t target_block = 0;
+                int32_t target_block = (card_physical_address[i] - MEM_START) / MEM_BLOCK_SIZE;
             #endif
             
             #ifdef PLATFORM_VERSAL
@@ -305,7 +305,7 @@ void free_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         for (int i = n_pages - 1; i >= 0; i--) {
             // Find the block to which the page was stored 
             #ifdef PLATFORM_ULTRASCALE_PLUS
-                int32_t target_block = 0;
+                int32_t target_block = (card_physical_address[i] - MEM_START) / MEM_BLOCK_SIZE;
             #endif
             
             #ifdef PLATFORM_VERSAL

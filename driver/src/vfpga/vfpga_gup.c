@@ -394,13 +394,9 @@ struct user_pages* tlb_get_user_pages(struct vfpga_dev *device, struct pf_aligne
 
         int32_t target_block;
         #ifdef PLATFORM_ULTRASCALE_PLUS
-        // On UltraScale+ devices, each memory channel can access the entire memory
-        // Therefore, mem_block is ignored, since the entire memory is treated as one
-        // partition with no fine-grained control over memory allocation
-        if (mem_block != -1) {
-            dbg_info("memory block specified, but UltraScale+ devices do not support block memory; ignoring...\n");
-        }
-        target_block = -1;
+        // Ryloth direct-HBM: card memory is partitioned into N_MEM_BLOCKS windows of MEM_BLOCK_SIZE (one per
+        // hbm_wide port pair of pseudo-channels); an explicit mem_block pins the buffer to that window, -1 = first free
+        target_block = mem_block;
         #endif
 
         #ifdef PLATFORM_VERSAL
@@ -910,13 +906,9 @@ int p2p_attach_dma_buf(struct vfpga_dev *device, int buf_fd, uint64_t vaddr, int
 
         int32_t target_block;
         #ifdef PLATFORM_ULTRASCALE_PLUS
-        // On UltraScale+ devices, each memory channel can access the entire memory
-        // Therefore, mem_block is ignored, since the entire memory is treated as one
-        // partition with no fine-grained control over memory allocation
-        if (mem_block != -1) {
-            dbg_info("memory block specified, but UltraScale+ devices do not support block memory; ignoring...\n");
-        }
-        target_block = -1;
+        // Ryloth direct-HBM: card memory is partitioned into N_MEM_BLOCKS windows of MEM_BLOCK_SIZE (one per
+        // hbm_wide port pair of pseudo-channels); an explicit mem_block pins the buffer to that window, -1 = first free
+        target_block = mem_block;
         #endif
 
         #ifdef PLATFORM_VERSAL
