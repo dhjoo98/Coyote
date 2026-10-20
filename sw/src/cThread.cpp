@@ -695,13 +695,14 @@ void cThread::invoke(CoyoteOper oper, localSg sg, bool last) {
         postCmd(0, 0, addr_cmd_src, ctrl_cmd_src);
 
     } else if (oper == CoyoteOper::LOCAL_WRITE) {
+        // Ryloth direct-HBM: physical addresses are a read-only feature (the shell translates every write)
+        if (sg.phys) throw std::runtime_error("ERROR: localSg.phys is supported for reads only");
         uint64_t ctrl_cmd_dst =
             ((ctid & CTRL_PID_MASK) << CTRL_PID_OFFS) |
             ((sg.dest & CTRL_DEST_MASK) << CTRL_DEST_OFFS) |
             (last ? CTRL_LAST : 0x0) |
             ((sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(sg.len) << CTRL_LEN_OFFS);
 
         uint64_t addr_cmd_dst = reinterpret_cast<uint64_t>(sg.addr);
@@ -736,6 +737,8 @@ void cThread::invoke(CoyoteOper oper, localSg src_sg, localSg dst_sg, bool last)
 
     // Trigger the operation
     if (oper == CoyoteOper::LOCAL_TRANSFER) {
+        // Ryloth direct-HBM: physical addresses are a read-only feature (the shell translates every write)
+        if (dst_sg.phys) throw std::runtime_error("ERROR: localSg.phys is supported for reads only (dst_sg)");
         uint64_t ctrl_cmd_src =
             ((ctid & CTRL_PID_MASK) << CTRL_PID_OFFS) |
             ((src_sg.dest & CTRL_DEST_MASK) << CTRL_DEST_OFFS) |
@@ -751,7 +754,6 @@ void cThread::invoke(CoyoteOper oper, localSg src_sg, localSg dst_sg, bool last)
             (last ? CTRL_LAST : 0x0) |
             ((dst_sg.stream & CTRL_STRM_MASK) << CTRL_STRM_OFFS) | 
             (CTRL_START) | 
-            (dst_sg.phys ? CTRL_PHYS : 0x0) | 
             (static_cast<uint64_t>(dst_sg.len) << CTRL_LEN_OFFS);
 
         uint64_t addr_cmd_src = reinterpret_cast<uint64_t>(src_sg.addr);

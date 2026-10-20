@@ -138,8 +138,8 @@ assign phys_delta = PG_L_SIZE - vaddr_C[PG_L_BITS-1:0];
 // fast path: a physical STRM_CARD request skips the TLB mutex, lookup and fault handling entirely
 logic phys_s_req, phys_cch, phys_cur;
 `ifdef EN_MEM
-assign phys_s_req = s_req.data.rsrvd[0] && (s_req.data.strm == STRM_CARD);
-assign phys_cch   = cch_buff_src.data.rsrvd[0] && (cch_buff_src.data.strm == STRM_CARD);
+assign phys_s_req = (RDWR == 0) && s_req.data.rsrvd[0] && (s_req.data.strm == STRM_CARD);   // reads only
+assign phys_cch   = (RDWR == 0) && cch_buff_src.data.rsrvd[0] && (cch_buff_src.data.strm == STRM_CARD);
 assign phys_cur   = phys_C && (strm_C == STRM_CARD);
 `else
 assign phys_s_req = 1'b0;
