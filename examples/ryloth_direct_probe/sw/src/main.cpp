@@ -89,8 +89,10 @@ int main(int argc, char *argv[]) {
     if (phys) {
         for (unsigned k = 0; k < S; k++) {
             bool huge = false;
-            std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge);
-            const uint64_t pgsz = huge ? (2ull << 20) : 4096ull;
+            // the driver keeps one card address per 4 KiB page, also for huge-page buffers
+            std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
+            const uint64_t pgsz = 4096ull;
+            if (pg.size() * pgsz < region) { std::cerr << "stream " << first + k << ": only " << pg.size() << " pages mapped" << std::endl; return 4; }
             if (pg.empty()) { std::cerr << "stream " << first + k << ": no card pages" << std::endl; return 4; }
             for (size_t j = 1; j < pg.size(); j++) {
                 if (pg[j] != pg[0] + j * pgsz) {
@@ -101,7 +103,7 @@ int main(int argc, char *argv[]) {
             }
             bases[k] = pg[0];
             std::cout << "stream " << first + k << ": card paddr 0x" << std::hex << pg[0] << std::dec << " (window " << (pg[0] >> 30) << "), "
-                      << pg.size() << (huge ? " huge" : " regular") << " pages" << std::endl;
+                      << pg.size() << " x 4 KiB pages" << (huge ? " (huge-page buffer)" : "") << ", contiguous" << std::endl;
         }
     }
 

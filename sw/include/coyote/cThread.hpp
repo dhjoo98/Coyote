@@ -215,9 +215,10 @@ protected:
 
 	/**
 	 * @brief Ryloth direct-HBM: card physical addresses of the pages of a buffer mapped by this thread
-	 * (needs the ryloth/direct-hbm-driver driver). Returns the page addresses (4 KiB or 2 MiB pages, see huge).
+	 * (needs the ryloth/direct-hbm-driver driver). Returns one card address per 4 KiB page of the buffer (also for
+	 * huge-page buffers; huge reports the buffer type), at most max_pages of them; vaddr must be the buffer start.
 	 */
-	std::vector<uint64_t> getCardPaddr(void *vaddr, bool &huge, uint64_t max_pages = 16384);
+	std::vector<uint64_t> getCardPaddr(void *vaddr, bool &huge, uint64_t max_pages = 262144);
 
 	/**
 	 * @brief Unmaps a buffer from the the vFPGAs TLB
