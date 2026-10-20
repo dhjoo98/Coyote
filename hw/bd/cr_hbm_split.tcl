@@ -629,7 +629,12 @@ proc cr_bd_design_hbm { parentCell } {
 
 # Combiner
 for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {   
-   create_bd_cell -type module -reference hbm_wide hbm_wide_$i   
+   # Ryloth direct read ports: their width split is the read-only hbm_wide_rd (no write or response FIFOs)
+   if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && $i >= [expr {$cnfg(n_mem_chan) - $cnfg(n_direct_rd)}]} {
+      create_bd_cell -type module -reference hbm_wide_rd hbm_wide_$i
+   } else {
+      create_bd_cell -type module -reference hbm_wide hbm_wide_$i   
+   }
    set cmd [format "set_property -dict \[list CONFIG.HBM_CHAN_SIZE {$cnfg(hbm_size)}] \[get_bd_cells hbm_wide_$i]"]
    eval $cmd
    connect_bd_net [get_bd_ports aclk] [get_bd_pins hbm_wide_$i/aclk]
