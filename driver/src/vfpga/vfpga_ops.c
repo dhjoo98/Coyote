@@ -500,6 +500,40 @@ long vfpga_dev_ioctl(struct file *file, unsigned int command, unsigned long arg)
         
         // Read shell config
         // Return: Various (compile-time) shell parameters (EN_RDMA, EN_MEM, etc.)
+        // Ryloth direct-HBM: report the card physical pages of a mapped user buffer, so the host can issue
+        // physical (TLB-bypassing) card reads. In: tmp[0] = vaddr, tmp[1] = ctid, tmp[2] = max pages the user
+        // buffer can take. Out (same buffer): [0] = n_pages of the mapping, [1] = huge (page size 2 MiB if 1,
+        // 4 KiB if 0), [2 .. 2+min(n_pages, max)-1] = card physical address of each page.
+        case IOCTL_GET_CARD_PADDR:
+            ret_val = copy_from_user(&tmp, (unsigned long *) arg, 3 * sizeof(unsigned long));
+            if (ret_val != 0) {
+                pr_warn("user data could not be coppied, return %d\n", ret_val);
+            } else {
+                int32_t ctid = (int32_t) tmp[1];
+                uint64_t max_pages = tmp[2];
+                struct bus_driver_data *bd_data = device->bd_data;
+                uint64_t vaddr_pg = (tmp[0] & bd_data->stlb_meta->page_mask) >> bd_data->stlb_meta->page_shift;
+                struct user_pages *tmp_entry, *found = NULL;
+                if (ctid < 0 || ctid >= N_CTID_MAX || !bd_data->en_mem) { ret_val = -EINVAL; break; }
+                mutex_lock(&device->mmu_lock);
+                hash_for_each_possible(user_buff_map[device->id][ctid], tmp_entry, entry, vaddr_pg) {
+                    if (vaddr_pg >= tmp_entry->vaddr && vaddr_pg < tmp_entry->vaddr + tmp_entry->n_pages) { found = tmp_entry; break; }
+                }
+                if (!found || !found->cpages) {
+                    mutex_unlock(&device->mmu_lock);
+                    dbg_info("get_card_paddr: no card mapping for vaddr %llx ctid %d\n", tmp[0], ctid);
+                    ret_val = -ENOENT; break;
+                }
+                uint64_t n = found->n_pages < max_pages ? found->n_pages : max_pages;
+                tmp[0] = found->n_pages; tmp[1] = found->huge ? 1 : 0;
+                ret_val = copy_to_user((unsigned long *) arg, &tmp, 2 * sizeof(unsigned long));
+                if (ret_val == 0 && n > 0)
+                    ret_val = copy_to_user(((unsigned long *) arg) + 2, found->cpages, n * sizeof(uint64_t));
+                mutex_unlock(&device->mmu_lock);
+                if (ret_val != 0) pr_warn("could not copy card addresses to user space, return %d\n", ret_val);
+            }
+            break;
+
         case IOCTL_READ_SHELL_CONFIG:
             tmp[0] = ((uint64_t)device_data->n_fpga_chan << 32) | ((uint64_t)device_data->n_fpga_reg << 48) |
                      ((uint64_t)device_data->en_avx) | ((uint64_t)device_data->en_wb << 1) |
