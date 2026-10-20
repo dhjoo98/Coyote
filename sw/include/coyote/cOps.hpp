@@ -131,6 +131,10 @@ struct CoyoteAlloc {
 
     /// Pointer to the allocated memory; the struct keeps track of it so that it can be freed automatically after use
     void *mem = { nullptr };
+
+    /// Card memory block (window) to place this buffer in when it migrates to the card; -1 = driver picks the first
+    /// block with space. Ryloth direct-HBM: block j is read locally by card stream j-1 (see driver coyote_defs.h).
+    int32_t mem_block = { -1 };
 };
 
 ///////////////////////////////////////////////////

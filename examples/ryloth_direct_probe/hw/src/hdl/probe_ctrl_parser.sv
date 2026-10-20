@@ -7,12 +7,12 @@
  *   0  CTRL       w  [0] start (self-clearing pulse), [1] advance (vaddr += len per request within a stream)
  *   1  STATUS     r  [0] done, [63:32] completions seen on cq_rd
  *   2  TIMER      r  cycles from start to done (ACLK)
- *   3  VADDR      w  base address of stream 0's region
+ *   3  VADDR      w  base address of stream SEL's region (write SEL first; one entry per stream)
  *   4  LEN        w  bytes per request
  *   5  PID        w  Coyote thread id
  *   6  N_REPS     w  requests per stream
  *   7  N_BEATS    w  expected 64 B beats per stream (= N_REPS * ceil(LEN / 64))
- *   8  STRIDE     w  address distance between consecutive streams' regions
+ *   8  STRIDE     w  unused since the per-stream VADDR table (kept so the map does not move)
  *   9  MASK       w  active streams (bit i = stream i)
  *   10 SEL        w  stream index for the per-stream readbacks below
  *   11 BEATS_SEL  r  beats received by stream SEL
@@ -32,6 +32,7 @@ module probe_ctrl_parser (
 
   output logic [1:0]                  ctrl,
   output logic [63:0]                 csr_vaddr,
+  output logic                        csr_vaddr_we,   // one-cycle strobe after a VADDR write (host writes SEL first)
   output logic [63:0]                 csr_stride,
   output logic [31:0]                 csr_len,
   output logic [31:0]                 csr_n_reps,
@@ -81,9 +82,11 @@ assign ctrl_reg_wren = axi_wready && axi_ctrl.wvalid && axi_awready && axi_ctrl.
 always_ff @(posedge aclk) begin
   if (aresetn == 1'b0) begin
     ctrl_reg <= 0;
+    csr_vaddr_we <= 1'b0;
   end
   else begin
     ctrl_reg[R_CTRL] <= 0;
+    csr_vaddr_we <= ctrl_reg_wren && (axi_awaddr[ADDR_LSB+:ADDR_MSB] == R_VADDR);
     if (ctrl_reg_wren) begin
       case (axi_awaddr[ADDR_LSB+:ADDR_MSB])
         R_CTRL, R_VADDR, R_LEN, R_PID, R_N_REPS, R_N_BEATS, R_STRIDE, R_MASK, R_SEL:

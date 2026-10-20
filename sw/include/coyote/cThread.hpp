@@ -211,7 +211,7 @@ protected:
 	 * @param vaddr Virtual address of the buffer
 	 * @param len Length of the buffer, in bytes
 	 */
-	void userMap(void *vaddr, uint32_t len);
+	void userMap(void *vaddr, uint32_t len, int32_t mem_block = -1);
 
 	/**
 	 * @brief Unmaps a buffer from the the vFPGAs TLB

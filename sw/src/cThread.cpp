@@ -356,13 +356,14 @@ void cThread::munmapFpga() {
 	wback = 0;
 }
 
-void cThread::userMap(void *vaddr, uint32_t len) {
-    DBG1("cThread: Called userMap to map user buffer, vaddr " << vaddr << ", length " << len << " and ctid " << ctid);
+void cThread::userMap(void *vaddr, uint32_t len, int32_t mem_block) {
+    DBG1("cThread: Called userMap to map user buffer, vaddr " << vaddr << ", length " << len << ", mem_block " << mem_block << " and ctid " << ctid);
 
     uint64_t tmp[MAX_USER_ARGS];
 	tmp[0] = reinterpret_cast<uint64_t>(vaddr);
 	tmp[1] = static_cast<uint64_t>(len);
 	tmp[2] = static_cast<uint64_t>(ctid);
+	tmp[3] = static_cast<uint64_t>(static_cast<int64_t>(mem_block));   // the driver reads tmp[3] as int32_t
 
     int ret_val = ioctl(fd, IOCTL_MAP_USER_MEM, &tmp);
 	if (ret_val) {
@@ -397,7 +398,7 @@ void* cThread::getMem(CoyoteAlloc&& alloc) {
 			case CoyoteAllocType::REG : {
                 DBG1("cThread: Obtain regular memory"); 
                 mem = mmap(NULL, alloc.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-				userMap(mem, alloc.size);
+				userMap(mem, alloc.size, alloc.mem_block);
 				break;
             }
 
@@ -409,7 +410,7 @@ void* cThread::getMem(CoyoteAlloc&& alloc) {
                     std::cerr << "ERROR: cThread::getMem() - Failed to allocate transparent hugepages!" << std::endl;;
                     return nullptr;
                 }
-                userMap(mem, alloc.size);
+                userMap(mem, alloc.size, alloc.mem_block);
                 break;
             }
 

@@ -8,9 +8,11 @@
  * side of the partial-reconfiguration flow for the direct-HBM shell.
  *
  * Protocol (AXI-Lite CSRs, see probe_ctrl_parser.sv):
- *   write VADDR, STRIDE, LEN, N_REPS, N_BEATS, PID, STREAM_MASK, then CTRL (bit 0 = start, bit 1 = advance).
- *   Stream i issues N_REPS LOCAL_READ requests of LEN bytes from VADDR + i*STRIDE (+ k*LEN per request k when
- *   advance is set, i.e. a sequential scan of its region) with dest = i, strm = STRM_CARD. Requests of the
+ *   for each stream: write SEL then VADDR; then LEN, N_REPS, N_BEATS, PID, STREAM_MASK, then CTRL (bit 0 = start,
+ *   bit 1 = advance).
+ *   Stream i issues N_REPS LOCAL_READ requests of LEN bytes from its own base (VADDR written with SEL = i; one
+ *   entry per stream) (+ k*LEN per request k when advance is set, i.e. a sequential scan of its region) with
+ *   dest = i, strm = STRM_CARD. Requests of the
  *   active streams are issued round-robin through the single send queue. Every stream accepts data as fast as
  *   it arrives. DONE is set when every active stream has issued all requests and received N_BEATS beats.
  *   TIMER counts cycles from start to DONE; per-stream BEATS / T_LAST / ISSUED are read back through SEL.
@@ -22,7 +24,9 @@ localparam integer SEL_BITS = (NS > 1) ? $clog2(NS) : 1;
 // ---------------------------------------------------------------- CSRs
 logic [1:0]             ctrl;            // [0] start pulse, [1] advance mode
 logic [63:0]            csr_vaddr;
-logic [63:0]            csr_stride;
+logic                   csr_vaddr_we;
+logic [63:0]            csr_stride;      // unused: per-stream table below
+logic [31:0]            csr_sel_raw;
 logic [31:0]            csr_len;
 logic [31:0]            csr_n_reps;
 logic [63:0]            csr_n_beats;
@@ -40,8 +44,8 @@ logic [31:0]            st_issued_sel;
 
 probe_ctrl_parser inst_ctrl (
     .aclk(aclk), .aresetn(aresetn), .axi_ctrl(axi_ctrl),
-    .ctrl(ctrl), .csr_vaddr(csr_vaddr), .csr_stride(csr_stride), .csr_len(csr_len), .csr_n_reps(csr_n_reps),
-    .csr_n_beats(csr_n_beats), .csr_pid(csr_pid), .csr_mask(csr_mask), .csr_sel(csr_sel),
+    .ctrl(ctrl), .csr_vaddr(csr_vaddr), .csr_vaddr_we(csr_vaddr_we), .csr_stride(csr_stride), .csr_len(csr_len),
+    .csr_n_reps(csr_n_reps), .csr_n_beats(csr_n_beats), .csr_pid(csr_pid), .csr_mask(csr_mask), .csr_sel_raw(csr_sel_raw),
     .st_done(st_done), .st_cq_cnt(st_cq_cnt), .st_timer(st_timer), .st_t_first(st_t_first),
     .st_beats_sel(st_beats_sel), .st_t_last_sel(st_t_last_sel), .st_issued_sel(st_issued_sel),
     .st_n_streams(32'(NS))
@@ -59,6 +63,8 @@ logic [63:0]            beats     [NS];
 logic [63:0]            t_last    [NS];
 logic [SEL_BITS-1:0]    rr;
 logic                   seen_first;
+logic [63:0]            vaddr_tab [NS];     // per-stream region base, written through SEL + VADDR
+assign csr_sel = csr_sel_raw[SEL_BITS-1:0];
 logic [NS-1:0]          beat_fire;
 
 wire start = ctrl[0] && !running;
@@ -85,9 +91,10 @@ always_ff @(posedge aclk) begin
         running <= 1'b0; advance <= 1'b0; active <= '0; req_done <= '0; data_done <= '0;
         rr <= '0; st_timer <= '0; st_cq_cnt <= '0; st_done <= 1'b0; st_t_first <= '0; seen_first <= 1'b0;
         for (int i = 0; i < NS; i++) begin
-            cur_vaddr[i] <= '0; issued[i] <= '0; beats[i] <= '0; t_last[i] <= '0;
+            cur_vaddr[i] <= '0; issued[i] <= '0; beats[i] <= '0; t_last[i] <= '0; vaddr_tab[i] <= '0;
         end
     end else begin
+        if (csr_vaddr_we && !running) vaddr_tab[csr_sel] <= csr_vaddr;
         if (start) begin
             running <= 1'b1; advance <= ctrl[1]; st_done <= 1'b0; st_timer <= '0; st_cq_cnt <= '0;
             st_t_first <= '0; seen_first <= 1'b0; rr <= '0;
@@ -95,7 +102,7 @@ always_ff @(posedge aclk) begin
                 active[i]    <= csr_mask[i];
                 req_done[i]  <= ~csr_mask[i] || (csr_n_reps == 0);
                 data_done[i] <= ~csr_mask[i] || (csr_n_beats == 0);
-                cur_vaddr[i] <= csr_vaddr + 64'(i) * csr_stride;
+                cur_vaddr[i] <= vaddr_tab[i];
                 issued[i]    <= '0; beats[i] <= '0; t_last[i] <= '0;
             end
         end else if (running) begin
