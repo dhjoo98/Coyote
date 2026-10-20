@@ -376,7 +376,8 @@ void cThread::userMap(void *vaddr, uint32_t len, int32_t mem_block) {
 	tmp[0] = reinterpret_cast<uint64_t>(vaddr);
 	tmp[1] = static_cast<uint64_t>(len);
 	tmp[2] = static_cast<uint64_t>(ctid);
-	tmp[3] = static_cast<uint64_t>(static_cast<int64_t>(mem_block));   // the driver reads tmp[3] as int32_t
+	// the direct-HBM driver honors mem_block only with MEM_BLOCK_TAG in the upper 32 bits (older libraries leave tmp[3] unset)
+	tmp[3] = (static_cast<uint64_t>(MEM_BLOCK_TAG) << 32) | static_cast<uint64_t>(static_cast<uint32_t>(mem_block));
 
     int ret_val = ioctl(fd, IOCTL_MAP_USER_MEM, &tmp);
 	if (ret_val) {
@@ -461,7 +462,7 @@ void* cThread::getMem(CoyoteAlloc&& alloc) {
 
 
 
-                userMap(mem, sz);
+                userMap(mem, sz, alloc.mem_block);
                 break;
             }
 

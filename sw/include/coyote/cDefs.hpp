@@ -210,6 +210,10 @@ enum class CnfgLegRegs : uint32_t {
 #define CTRL_START                          (1UL << 21)
 #define CTRL_CLR_STAT                       (1UL << 22)
 #define CTRL_PHYS                           (1UL << 23)   // Ryloth direct-HBM: card address is physical (TLB bypass)
+
+// Ryloth direct-HBM: tag in the upper 32 bits of the user-map mem_block argument (must match the driver's MEM_BLOCK_TAG)
+#define MEM_BLOCK_TAG                       0x52594CUL
+
 #define CTRL_LEN_OFFS                       (32)
 
 #define CTRL_OPCODE_MASK                    (0x1f)
