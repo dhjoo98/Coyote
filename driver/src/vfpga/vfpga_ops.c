@@ -302,7 +302,7 @@ long vfpga_dev_ioctl(struct file *file, unsigned int command, unsigned long arg)
                         ret_val = mmu_handler_hmm(device, tmp[0], tmp[1], ctid, true, hpid);
                     else
                 #endif
-                    int32_t mem_block = (int32_t) tmp[3];           
+                    int32_t mem_block = DECODE_MEM_BLOCK(tmp[3]);
                     ret_val = mmu_handler_gup(device, tmp[0], tmp[1], ctid, true, hpid, mem_block);
                 
                 if (ret_val && ret_val != BUFF_NEEDS_EXP_SYNC_RET_CODE) {
@@ -353,7 +353,7 @@ long vfpga_dev_ioctl(struct file *file, unsigned int command, unsigned long arg)
                     mutex_lock(&device->mmu_lock);
                     change_tlb_lock(device);                    
                     
-                    int32_t mem_block = (int32_t) tmp[3];
+                    int32_t mem_block = DECODE_MEM_BLOCK(tmp[3]);
                     ret_val = p2p_attach_dma_buf(device, tmp[0], tmp[1], ctid, mem_block);
                     if(ret_val) {
                         dbg_info("buffer could not be mapped, ret_val: %d\n", ret_val);

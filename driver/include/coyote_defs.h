@@ -328,6 +328,11 @@ extern bool en_hmm;
 #define MAX_N_REGIONS 16
 #define BUFF_NEEDS_EXP_SYNC_RET_CODE 99
 
+// Ryloth direct-HBM: the user-map ioctls carry mem_block in tmp[3]. Older host libraries never set tmp[3] (stack data),
+// so mem_block is honored only when the upper 32 bits hold this tag; any other value means -1 (first-free placement).
+#define MEM_BLOCK_TAG 0x52594CUL
+#define DECODE_MEM_BLOCK(x) ((((uint64_t)(x)) >> 32) == MEM_BLOCK_TAG ? (int32_t)(((uint64_t)(x)) & 0xffffffffUL) : -1)
+
 // Card memory constants
 // On UltraScale+ devices, support up to 1024 * 1024 chunks of 4 KB
 // accross the entire memory; i.e. 4 GB for regular and 4 GB for huge pages
