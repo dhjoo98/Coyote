@@ -628,6 +628,20 @@ proc cr_bd_design_hbm { parentCell } {
 ########################################################################################################
 
 # Combiner
+# Ryloth direct read ports: the last n_direct_rd memory ports (slot p of both stacks) get the direct path
+set drd_n 0
+if {[info exists cnfg(n_direct_rd)]} { set drd_n $cnfg(n_direct_rd) }
+set drd_hclk 0
+if {[info exists cnfg(drd_hclk)]} { set drd_hclk $cnfg(drd_hclk) }
+set drd_first [expr {$cnfg(n_mem_chan) - $drd_n}]
+if {$drd_n > 0} {
+   # Local ACLK reset for the direct paths' fabric (width split, register slice, protocol converter): the shell's
+   # global aresetn is one flop with a fan-out above 100k, and at 225 MHz its route into SLR0 missed timing by 0.5 ns
+   # (drd14r_225, 10/21). The synchronizer re-times the same reset next to its loads.
+   set drd_fabric_rst [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 drd_fabric_rst ]
+   connect_bd_net [get_bd_ports aclk] [get_bd_pins drd_fabric_rst/slowest_sync_clk]
+   connect_bd_net [get_bd_ports aresetn] [get_bd_pins drd_fabric_rst/ext_reset_in]
+}
 for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {   
    # Ryloth direct read ports: their width split is the read-only hbm_wide_rd (no write or response FIFOs)
    if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && $i >= [expr {$cnfg(n_mem_chan) - $cnfg(n_direct_rd)}]} {
@@ -638,24 +652,23 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
    set cmd [format "set_property -dict \[list CONFIG.HBM_CHAN_SIZE {$cnfg(hbm_size)}] \[get_bd_cells hbm_wide_$i]"]
    eval $cmd
    connect_bd_net [get_bd_ports aclk] [get_bd_pins hbm_wide_$i/aclk]
-   connect_bd_net [get_bd_ports aresetn] [get_bd_pins hbm_wide_$i/aresetn]
+   if {$drd_n > 0 && $i >= $drd_first} {
+      connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins hbm_wide_$i/aresetn]
+   } else {
+      connect_bd_net [get_bd_ports aresetn] [get_bd_pins hbm_wide_$i/aresetn]
+   }
 }
 
  # Path
- # Ryloth direct read ports: the last n_direct_rd memory ports (slot p of both stacks) get the direct path
- set drd_n 0
- if {[info exists cnfg(n_direct_rd)]} { set drd_n $cnfg(n_direct_rd) }
- set drd_hclk 0
- if {[info exists cnfg(drd_hclk)]} { set drd_hclk $cnfg(drd_hclk) }
- set drd_first [expr {$cnfg(n_mem_chan) - $drd_n}]
  for {set i 0}  {$i < 2 * $cnfg(n_mem_chan)} {incr i} {  
     if {$drd_n > 0 && [expr {$i % $cnfg(n_mem_chan)}] >= $drd_first} {
        create_hier_cell_path_drd [current_bd_instance .] path_$i $drd_hclk
+       connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins path_$i/aresetn]
     } else {
        create_hier_cell_path [current_bd_instance .] path_$i
+       connect_bd_net [get_bd_ports aresetn] [get_bd_pins path_$i/aresetn]
     }
     connect_bd_net [get_bd_ports aclk] [get_bd_pins path_$i/aclk]
-    connect_bd_net [get_bd_ports aresetn] [get_bd_pins path_$i/aresetn]
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/hclk]
     connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins path_$i/hresetn]
  }
