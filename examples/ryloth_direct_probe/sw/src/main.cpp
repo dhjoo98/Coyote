@@ -15,6 +15,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <thread>
 #include <array>
 #include <utility>
 #include <vector>
@@ -66,13 +67,36 @@ int main(int argc, char *argv[]) {
     if (first >= n_build) { std::cerr << "first stream " << first << " >= build streams " << n_build << std::endl; return 1; }
     unsigned S = (n_streams_req == 0) ? n_build - first : n_streams_req;
     if (first + S > n_build) S = n_build - first;
+    // Limits (review 10/20): direct read ports read whole 64 B beats (a length that is not a multiple of 64 never
+    // completes); a region must fit one card window's huge-page pool (driver 33d016bc: 1 GiB block minus its 16 MiB
+    // regular pool); the requests must stay inside the region.
+    const uint64_t kMaxRegion = 1008ull << 20;
+    if (len == 0 || len % 64 != 0) { std::cerr << "--len must be a positive multiple of 64 B" << std::endl; return 2; }
+    if (region == 0 || region % 4096 != 0 || region > kMaxRegion) {
+        std::cerr << "--region must be a multiple of 4 KiB and at most 1008 MiB (one card window's huge-page pool)" << std::endl; return 2;
+    }
     if (reps == 0) reps = static_cast<unsigned>(region / len);
+    if (reps == 0 || (advance ? static_cast<uint64_t>(reps) * len : len) > region) {
+        std::cerr << "requests exceed the region: " << reps << " x " << len << " B in " << region << " B" << std::endl; return 2;
+    }
     const uint64_t beats_per_stream = static_cast<uint64_t>(reps) * ((len + 63) / 64);
     std::cout << "build streams " << n_build << ", driving " << S << " (from " << first << "), region " << (region >> 20)
               << " MiB, request " << (len >> 10) << " KiB x " << reps << " per stream, " << (advance ? "sequential" : "same address")
               << ", placement " << (windows ? "window i+1" : "first-free") << std::endl;
 
-    // one region per driven stream, migrated to the card
+    // The probe has no abort: a run that timed out keeps it busy and every later start is ignored. Refuse to start on
+    // top of one (its timer still advances).
+    {
+        const uint64_t t1 = t.getCSR(R_TIMER);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (t.getCSR(R_TIMER) != t1 && !(t.getCSR(R_STATUS) & 1ull)) {
+            std::cerr << "the probe is still busy with an earlier run (one that timed out). It has no abort: reprogram the "
+                         "full image over JTAG and warm reboot, then run again." << std::endl;
+            return 6;
+        }
+    }
+
+    // one region per driven stream, migrated to the card (needs region / 2 MiB free hugepages per stream)
     std::vector<char*> regions(S);
     for (unsigned k = 0; k < S; k++) {
         const unsigned i = first + k;
@@ -88,30 +112,37 @@ int main(int argc, char *argv[]) {
         t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);     // blocking: the driver migrates the pages to the card
     }
 
-    // stage 2 and direct read ports: the vFPGA reads physical card addresses; each region must be physically contiguous
+    // Card placement of every region (IOCTL_GET_CARD_PADDR): with --windows the region of stream i must sit in card
+    // window i+1, the pseudo-channel next to its HBM port. Direct read ports and stage 2 (--phys) read physical card
+    // addresses, so their regions must also be physically contiguous.
     std::vector<uint64_t> bases(S, 0);
     std::vector<bool> use_phys(S);
     for (unsigned k = 0; k < S; k++) use_phys[k] = phys || (first + k >= first_direct);
-    {
-        for (unsigned k = 0; k < S; k++) {
-            if (!use_phys[k]) continue;
-            bool huge = false;
-            // the driver keeps one card address per 4 KiB page, also for huge-page buffers
-            std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
-            const uint64_t pgsz = 4096ull;
-            if (pg.size() * pgsz < region) { std::cerr << "stream " << first + k << ": only " << pg.size() << " pages mapped" << std::endl; return 4; }
-            if (pg.empty()) { std::cerr << "stream " << first + k << ": no card pages" << std::endl; return 4; }
+    for (unsigned k = 0; k < S; k++) {
+        const unsigned i = first + k;
+        bool huge = false;
+        // the driver keeps one card address per 4 KiB page, also for huge-page buffers
+        std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
+        const uint64_t pgsz = 4096ull;
+        if (pg.empty() || pg.size() * pgsz < region) { std::cerr << "stream " << i << ": only " << pg.size() << " pages mapped" << std::endl; return 4; }
+        if (windows && (pg[0] >> 30) != i + 1) {
+            std::cerr << "stream " << i << ": region placed in card window " << (pg[0] >> 30) << ", expected " << i + 1
+                      << " (host library before b6966163 or driver before 3b34e8b1?)" << std::endl;
+            return 4;
+        }
+        if (use_phys[k]) {
             for (size_t j = 1; j < pg.size(); j++) {
                 if (pg[j] != pg[0] + j * pgsz) {
-                    std::cerr << "stream " << first + k << ": region not physically contiguous at page " << j
+                    std::cerr << "stream " << i << ": region not physically contiguous at page " << j
                               << " (" << std::hex << pg[j] << " vs " << pg[0] + j * pgsz << std::dec << "); use a smaller --region" << std::endl;
                     return 4;
                 }
             }
             bases[k] = pg[0];
-            std::cout << "stream " << first + k << ": card paddr 0x" << std::hex << pg[0] << std::dec << " (window " << (pg[0] >> 30) << "), "
-                      << pg.size() << " x 4 KiB pages" << (huge ? " (huge-page buffer)" : "") << ", contiguous" << std::endl;
         }
+        std::cout << "stream " << i << (i >= first_direct ? " (direct)" : " (Coyote)") << ": card paddr 0x" << std::hex << pg[0] << std::dec
+                  << " (window " << (pg[0] >> 30) << "), " << pg.size() << " x 4 KiB pages" << (huge ? " (huge-page buffer)" : "")
+                  << (use_phys[k] ? ", contiguous" : "") << std::endl;
     }
 
     // expected per-stream, per-lane sums of 64-bit words (the vFPGA's data check), for one run
@@ -129,6 +160,7 @@ int main(int argc, char *argv[]) {
     uint64_t mask = 0;
     for (unsigned k = 0; k < S; k++) mask |= 1ull << (first + k);
 
+    unsigned total_bad = 0;
     for (unsigned run = 0; run < n_runs; run++) {
         for (unsigned k = 0; k < S; k++) {               // per-stream base: SEL then VADDR
             t.setCSR(first + k, R_SEL);
@@ -150,6 +182,8 @@ int main(int argc, char *argv[]) {
                     std::cerr << "  stream " << first + k << " issued " << t.getCSR(R_ISSUED_SEL) << " beats " << t.getCSR(R_BEATS_SEL)
                               << " of " << beats_per_stream << std::endl;
                 }
+                std::cerr << "The probe has no abort and stays busy now: reprogram the full image over JTAG and warm reboot "
+                             "before the next run." << std::endl;
                 return 3;
             }
         }
@@ -179,6 +213,7 @@ int main(int argc, char *argv[]) {
             }
         }
         std::cout << "  data check: " << (bad ? "FAIL" : "all streams match") << " (" << S * 8 << " lane sums, " << bad << " wrong)" << std::endl;
+        total_bad += bad;
     }
-    return 0;
+    return total_bad ? 5 : 0;
 }
