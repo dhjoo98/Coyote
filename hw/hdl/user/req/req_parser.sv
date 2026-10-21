@@ -58,7 +58,10 @@ logic [DEST_BITS-1:0] dest_C, dest_N;
 logic [STRM_BITS-1:0] strm_C, strm_N;
 logic last_C, last_N;
 logic host_C, host_N;
-logic [$bits(s_req.data.rsrvd)-1:0] rsrvd_C, rsrvd_N; // Ryloth direct-HBM: rsrvd[0] = physical card address flag, carried to the MMU
+// Ryloth direct-HBM: rsrvd[0] = physical card address flag, carried to the MMU. The width comes from the req_t type, not
+// from the interface port: Vivado's project scanner elaborates modules standalone and cannot resolve $bits(s_req.data.x).
+req_t rsrvd_w_probe;
+logic [$bits(rsrvd_w_probe.rsrvd)-1:0] rsrvd_C, rsrvd_N;
 logic actv_C, actv_N;
 logic [LEN_BITS-1:0] len_C, len_N;
 logic [VADDR_BITS-1:0] vaddr_C, vaddr_N;
