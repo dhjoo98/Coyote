@@ -40,7 +40,7 @@ inline uint64_t splitmix64(uint64_t x) {
 }
 
 static int run(int argc, char *argv[]) {
-    unsigned n_streams_req, n_runs, reps, first, max_out;
+    unsigned n_streams_req, n_runs, reps, first, max_out, group;
     std::string partial;
     uint64_t region, len;
     double aclk_mhz;
@@ -60,20 +60,34 @@ static int run(int argc, char *argv[]) {
         ("runs,r", boost::program_options::value<unsigned>(&n_runs)->default_value(5), "repetitions")
         ("aclk", boost::program_options::value<double>(&aclk_mhz)->default_value(150.0), "ACLK in MHz (timer clock)")
         ("max_out,o", boost::program_options::value<unsigned>(&max_out)->default_value(8), "bursts in flight per direct read port, 1..32 (probe v4+; 8 keeps the shell's read return free of back-pressure, 32 reproduces the 10/20 step-5 stall)")
-        ("partial", boost::program_options::value<std::string>(&partial)->default_value(""), "load this user partial bitstream (vfpga_c0_0.bin) through Coyote app reconfiguration before the run (the shell must be idle)");
+        ("partial", boost::program_options::value<std::string>(&partial)->default_value(""), "load this user partial bitstream (vfpga_c0_0.bin) through Coyote app reconfiguration before the run (the shell must be idle)")
+        ("group,g", boost::program_options::value<unsigned>(&group)->default_value(1), "with --windows 1: streams per card window, stream i goes to window i/group + 1 (1 = its own window; 3 = three ports per pseudo-channel pair, the step-5 layout, independent of what ran before)");
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, opts), vm);
     boost::program_options::notify(vm);
     if (vm.count("help")) { std::cout << opts << std::endl; return 0; }
 
     if (max_out < 1 || max_out > 32) { std::cerr << "--max_out must be 1..32" << std::endl; return 2; }
+    if (group < 1 || group > 16) { std::cerr << "--group must be 1..16" << std::endl; return 2; }
+    coyote::cThread t(DEFAULT_VFPGA_ID, getpid());
+
+    // The probe has no abort: a run that timed out keeps it busy and every later start is ignored. Refuse to start on
+    // top of one (its timer still advances). Checked BEFORE a --partial load, so a forgotten JTAG is harmless.
+    {
+        const uint64_t t1 = t.getCSR(R_TIMER);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        if (t.getCSR(R_TIMER) != t1 && !(t.getCSR(R_STATUS) & 1ull)) {
+            std::cerr << "the probe is still busy with an earlier run (one that timed out). It has no abort: reprogram the "
+                         "full image over JTAG and warm reboot, then run again." << std::endl;
+            return 6;
+        }
+    }
     if (!partial.empty()) {
         std::cout << "loading user partial " << partial << " (app reconfiguration of vFPGA " << DEFAULT_VFPGA_ID << ")" << std::endl;
         coyote::cRcnfg rc(0);
         rc.reconfigureApp(partial, DEFAULT_VFPGA_ID);
         std::cout << "partial loaded" << std::endl;
     }
-    coyote::cThread t(DEFAULT_VFPGA_ID, getpid());
     const unsigned n_build = static_cast<unsigned>(t.getCSR(R_N_STREAMS));
     // probe v3: the last n_direct streams are direct read ports (physical card addresses, no MMU); older partials read 0
     const unsigned n_direct = static_cast<unsigned>(t.getCSR(R_N_DIRECT)) & 0xffu;
@@ -101,19 +115,7 @@ static int run(int argc, char *argv[]) {
     const uint64_t beats_per_stream = static_cast<uint64_t>(reps) * ((len + 63) / 64);
     std::cout << "build streams " << n_build << ", driving " << S << " (from " << first << "), region " << (region >> 20)
               << " MiB, request " << (len >> 10) << " KiB x " << reps << " per stream, " << (advance ? "sequential" : "same address")
-              << ", placement " << (windows ? "window i+1" : "first-free") << std::endl;
-
-    // The probe has no abort: a run that timed out keeps it busy and every later start is ignored. Refuse to start on
-    // top of one (its timer still advances).
-    {
-        const uint64_t t1 = t.getCSR(R_TIMER);
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        if (t.getCSR(R_TIMER) != t1 && !(t.getCSR(R_STATUS) & 1ull)) {
-            std::cerr << "the probe is still busy with an earlier run (one that timed out). It has no abort: reprogram the "
-                         "full image over JTAG and warm reboot, then run again." << std::endl;
-            return 6;
-        }
-    }
+              << ", placement " << (windows ? (group == 1 ? std::string("window i+1") : "window i/" + std::to_string(group) + "+1") : std::string("first-free")) << std::endl;
 
     // one region per driven stream, migrated to the card (needs region / 2 MiB free hugepages per stream)
     std::vector<char*> regions(S);
@@ -122,7 +124,7 @@ static int run(int argc, char *argv[]) {
         coyote::CoyoteAlloc a;
         a.alloc = coyote::CoyoteAllocType::HPF;
         a.size = static_cast<uint32_t>(region);
-        a.mem_block = windows ? static_cast<int32_t>(i + 1) : -1;
+        a.mem_block = windows ? static_cast<int32_t>(i / group + 1) : -1;
         regions[k] = static_cast<char*>(t.getMem(std::move(a)));
         if (!regions[k]) { std::cerr << "allocation failed for stream " << i << std::endl; return 1; }
         uint64_t *w = reinterpret_cast<uint64_t*>(regions[k]);
@@ -149,8 +151,8 @@ static int run(int argc, char *argv[]) {
         std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
         const uint64_t pgsz = 4096ull;
         if (pg.empty() || pg.size() * pgsz < region) { std::cerr << "stream " << i << ": only " << pg.size() << " pages mapped" << std::endl; return 4; }
-        if (windows && (pg[0] >> 30) != i + 1) {
-            std::cerr << "stream " << i << ": region placed in card window " << (pg[0] >> 30) << ", expected " << i + 1
+        if (windows && (pg[0] >> 30) != i / group + 1) {
+            std::cerr << "stream " << i << ": region placed in card window " << (pg[0] >> 30) << ", expected " << i / group + 1
                       << " (host library before b6966163 or driver before 3b34e8b1?)" << std::endl;
             return 4;
         }
