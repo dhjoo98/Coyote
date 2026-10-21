@@ -190,6 +190,12 @@ void trigger_dma_sync(struct vfpga_dev *device, uint64_t *host_address, uint64_t
     }
 }
 
+// Ryloth direct-HBM: first fit of a run of n_pages consecutive free chunks, searched from the start of the
+// partition, starting on a multiple of align chunks. The direct read ports (and --phys reads) take one physical
+// base per region, so a region must be contiguous in card memory; a huge-page buffer must also start on a 2 MiB
+// boundary, which the card TLB maps as one page. The cursor walk below continues from the chunk freed last and
+// wraps from the end of the partition to its start: on 10/20 it split a 256 MiB region at the end of window 1
+// (box report 23:00). Returns the first chunk index, or -1 if there is no such run. O(n_total), under card_lock.
 static int64_t find_free_run(const struct memory_partition *part, uint64_t n_total, uint32_t n_pages, uint64_t align) {
     uint64_t run = 0, j;
 
@@ -209,10 +215,12 @@ static int64_t find_free_run(const struct memory_partition *part, uint64_t n_tot
 }
 
 int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address, uint32_t n_pages, bool huge, int32_t mem_block) {
+    // Parse device data and check non-null
     BUG_ON(!device);
     struct bus_driver_data *bus_data = device->bd_data;
     BUG_ON(!bus_data);
 
+    // Check memory block is within range
     if (mem_block < -1 || mem_block >= N_MEM_BLOCKS) {
         pr_warn("requested invalid memory block\n");
         return -EINVAL;
@@ -229,7 +237,8 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
 
     spin_lock(&bus_data->card_lock);
 
-    // 1. a contiguous run, in the requested block, or with mem_block = -1 in the first block that has one
+    // 1. Ryloth direct-HBM: a contiguous run, in the requested block, or with mem_block = -1 in the first block
+    //    that has one. A fresh pool gives the same layout as before (consecutive from the pool's first free chunk).
     for (int32_t b = b_first; b <= b_last; b++) {
         first = find_free_run(&parts[b], n_total, n_pages, align);
         if (first >= 0) {
@@ -247,7 +256,9 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         parts[target_block].free_chunks -= n_pages;
         parts[target_block].alloc = &parts[target_block].chunks[(first + n_pages) % n_total];
     } else {
-        // 2. no contiguous run: the original allocation (first block by free count, then the cursor walk)
+        // 2. No contiguous run anywhere eligible: the original allocation (first block by free count, then the
+        //    cursor walk), so nothing that allocated before fails now. Its pages may be scattered: fine for MMU
+        //    streams, refused by the direct ports' contiguity check.
         target_block = mem_block;
         if (target_block == -1) {
             for (int32_t b = 0; b < N_MEM_BLOCKS; b++) {
@@ -265,10 +276,13 @@ int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address,
         if (n_pages > 1)
             pr_warn("card buffer of %u pages in block %d is not contiguous (no free run of that length)\n", n_pages, target_block);
 
+        // Obtain the next available physical address, mark it as used and update the card_physical_address list with this page
         for (int i = 0; i < n_pages; i++) {
             while (parts[target_block].alloc->used)
                 parts[target_block].alloc = parts[target_block].alloc->next;
+
             card_physical_address[i] = ((uint64_t) parts[target_block].alloc->id << bus_data->stlb_meta->page_shift) + pool_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
+
             parts[target_block].free_chunks--;
             parts[target_block].alloc->used = true;
             parts[target_block].alloc = parts[target_block].alloc->next;
