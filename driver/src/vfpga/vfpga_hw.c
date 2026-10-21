@@ -190,96 +190,88 @@ void trigger_dma_sync(struct vfpga_dev *device, uint64_t *host_address, uint64_t
     }
 }
 
+static int64_t find_free_run(const struct memory_partition *part, uint64_t n_total, uint32_t n_pages, uint64_t align) {
+    uint64_t run = 0, j;
+
+    if (n_pages == 0 || n_pages > n_total || (int64_t) part->free_chunks < (int64_t) n_pages)
+        return -1;
+    for (j = 0; j < n_total; j++) {
+        if (part->chunks[j].used) {
+            run = 0;
+            continue;
+        }
+        if (run == 0 && (j % align) != 0)
+            continue;
+        if (++run == n_pages)
+            return (int64_t) (j + 1 - n_pages);
+    }
+    return -1;
+}
+
 int alloc_card_memory(struct vfpga_dev *device, uint64_t *card_physical_address, uint32_t n_pages, bool huge, int32_t mem_block) {
-    // Parse device data and check non-null
     BUG_ON(!device);
     struct bus_driver_data *bus_data = device->bd_data;
     BUG_ON(!bus_data);
 
-    // Check memory block is within range
     if (mem_block < -1 || mem_block >= N_MEM_BLOCKS) {
         pr_warn("requested invalid memory block\n");
         return -EINVAL;
     }
 
-    // If mem_block = -1, find first block with free space to store the buffer
-    // Otherwise, use user-requested memory block
-    int32_t target_block = mem_block;
-    if (target_block == -1) {
-        for (int i = 0; i < N_MEM_BLOCKS; i++) {
-            if (huge && (bus_data->card_lblocks[i].free_chunks >= n_pages)) {
-                target_block = i;
-                break;
-            }
+    struct memory_partition *parts = huge ? bus_data->card_lblocks : bus_data->card_sblocks;
+    const uint64_t n_total = huge ? N_LARGE_CHUNKS : N_SMALL_CHUNKS;
+    const uint64_t pool_offs = huge ? bus_data->card_huge_offs : bus_data->card_reg_offs;
+    const uint64_t align = (huge && bus_data->n_pages_in_huge > 0) ? bus_data->n_pages_in_huge : 1;
+    const int32_t b_first = (mem_block == -1) ? 0 : mem_block;
+    const int32_t b_last = (mem_block == -1) ? N_MEM_BLOCKS - 1 : mem_block;
+    int32_t target_block = -1;
+    int64_t first = -1;
 
-            if (!huge && (bus_data->card_sblocks[i].free_chunks >= n_pages)) {
-                target_block = i;
-                break;
-            }
-        }
+    spin_lock(&bus_data->card_lock);
 
-        // No block with sufficient space found, return
-        if (target_block == -1) {
-            pr_warn("insufficient memory on card to store buffer\n");
-            return -ENOMEM;
+    // 1. a contiguous run, in the requested block, or with mem_block = -1 in the first block that has one
+    for (int32_t b = b_first; b <= b_last; b++) {
+        first = find_free_run(&parts[b], n_total, n_pages, align);
+        if (first >= 0) {
+            target_block = b;
+            break;
         }
     }
-    
-    spin_lock(&bus_data->card_lock);
-    if (huge) {
-        // Check sufficient space is available 
-        if (bus_data->card_lblocks[target_block].free_chunks < n_pages) {
-            pr_warn("insufficient memory on card to store buffer\n");
-            spin_unlock(&bus_data->card_lock);
-            return -ENOMEM;
-        }
 
-        // Ryloth direct-HBM (2026-10-20): a huge-page buffer must be one contiguous run of chunks that does not wrap
-        // around the block (direct read ports and physical reads address it by its first page; the ring walk from the
-        // block's cursor wrapped a 256 MiB region on the box). First fit from the start of the block, aligned to the
-        // huge page, no wrap; -ENOMEM if no run is free. The layout no longer depends on what was freed before.
-        {
-            struct chunk *chunks = bus_data->card_lblocks[target_block].chunks;
-            const uint32_t align = 1U << bus_data->dif_order_page_shift;
-            uint32_t run = 0, start = 0;
-            bool found = false;
-            for (uint32_t j = 0; j < N_LARGE_CHUNKS; j++) {
-                if (chunks[j].used) { run = 0; continue; }
-                if (run == 0 && (j % align) != 0) continue;        // a run only starts on a huge-page boundary
-                if (run == 0) start = j;
-                run++;
-                if (run == n_pages) { found = true; break; }
-            }
-            if (!found) {
-                pr_warn("no contiguous run of %u huge-pool chunks in card block %d (%u free)\n", n_pages, target_block, bus_data->card_lblocks[target_block].free_chunks);
-                spin_unlock(&bus_data->card_lock);
-                return -ENOMEM;
-            }
-            for (uint32_t i = 0; i < n_pages; i++) {
-                card_physical_address[i] = ((uint64_t)chunks[start + i].id << bus_data->stlb_meta->page_shift) + bus_data->card_huge_offs + ((uint64_t)target_block * MEM_BLOCK_SIZE) + MEM_START;
-                bus_data->card_lblocks[target_block].free_chunks--;
-                chunks[start + i].used = true;
-            }
-            bus_data->card_lblocks[target_block].alloc = (start + n_pages < N_LARGE_CHUNKS) ? &chunks[start + n_pages] : &chunks[0];
+    if (target_block >= 0) {
+        for (uint32_t i = 0; i < n_pages; i++) {
+            struct chunk *c = &parts[target_block].chunks[first + i];
+            card_physical_address[i] = ((uint64_t) c->id << bus_data->stlb_meta->page_shift) + pool_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
+            c->used = true;
         }
+        parts[target_block].free_chunks -= n_pages;
+        parts[target_block].alloc = &parts[target_block].chunks[(first + n_pages) % n_total];
     } else {
-        // Check sufficient space in card memory is available 
-        if (bus_data->card_sblocks[target_block].free_chunks < n_pages) {
+        // 2. no contiguous run: the original allocation (first block by free count, then the cursor walk)
+        target_block = mem_block;
+        if (target_block == -1) {
+            for (int32_t b = 0; b < N_MEM_BLOCKS; b++) {
+                if (parts[b].free_chunks >= n_pages) {
+                    target_block = b;
+                    break;
+                }
+            }
+        }
+        if (target_block == -1 || parts[target_block].free_chunks < n_pages) {
             pr_warn("insufficient memory on card to store buffer\n");
             spin_unlock(&bus_data->card_lock);
             return -ENOMEM;
         }
+        if (n_pages > 1)
+            pr_warn("card buffer of %u pages in block %d is not contiguous (no free run of that length)\n", n_pages, target_block);
 
-        // Obtain the next available physical address, mark it as used and update the card_physical_address list with this page
         for (int i = 0; i < n_pages; i++) {
-            while (bus_data->card_sblocks[target_block].alloc->used)
-                bus_data->card_sblocks[target_block].alloc = bus_data->card_sblocks[target_block].alloc->next;
-
-            card_physical_address[i] = (bus_data->card_sblocks[target_block].alloc->id << bus_data->stlb_meta->page_shift) + bus_data->card_reg_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
-
-            bus_data->card_sblocks[target_block].free_chunks--;
-            bus_data->card_sblocks[target_block].alloc->used = true;
-            bus_data->card_sblocks[target_block].alloc = bus_data->card_sblocks[target_block].alloc->next;
+            while (parts[target_block].alloc->used)
+                parts[target_block].alloc = parts[target_block].alloc->next;
+            card_physical_address[i] = ((uint64_t) parts[target_block].alloc->id << bus_data->stlb_meta->page_shift) + pool_offs + (target_block * MEM_BLOCK_SIZE) + MEM_START;
+            parts[target_block].free_chunks--;
+            parts[target_block].alloc->used = true;
+            parts[target_block].alloc = parts[target_block].alloc->next;
         }
     }
 
