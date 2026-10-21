@@ -91,6 +91,10 @@ for {set i 0}  {$i < $cfg(n_config)} {incr i} {
         add_files "$hw_dir/hdl/user"
         add_files "$hw_dir/hdl/common"
         add_files "$proj_dir/hdl"
+        # Ryloth (2026-10-21): the HLS kernels' work trees (hdl/ext/<krnl>_hls, written by comp_hls) are not sources; the
+        # IPs come from the repository through create_ip below. With many kernels (16 in enns15d) Vivado's hierarchy
+        # scan failed on those trees and auto-disabled unrelated files (req_parser.sv), which broke the user synthesis.
+        remove_files -quiet [get_files -quiet -of_objects [get_filesets sources_1] -filter {NAME =~ "*/hdl/ext/*_hls/*"}]
 
         # Top level
         set_property "top" design_user_wrapper_$j [current_fileset]
