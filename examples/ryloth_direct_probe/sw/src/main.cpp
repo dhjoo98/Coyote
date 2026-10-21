@@ -10,6 +10,7 @@
  * without crossing the HBM switch (HBM port 0 is the shell's own DMA, port i+1 is card stream i). With
  * --windows=0 the driver places the regions first-free, which on the old shell is the same probe as today.
  */
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -28,13 +29,15 @@ constexpr uint32_t R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4
                    R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18;
 constexpr int DEFAULT_VFPGA_ID = 0;
 // deterministic fill: word k of stream i's region
+bool g_started = false;   // set once the first probe run has been started (for the exception message)
+
 inline uint64_t splitmix64(uint64_t x) {
     x += 0x9e3779b97f4a7c15ull; x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ull; x = (x ^ (x >> 27)) * 0x94d049bb133111ebull;
     return x ^ (x >> 31);
 }
 }
 
-int main(int argc, char *argv[]) {
+static int run(int argc, char *argv[]) {
     unsigned n_streams_req, n_runs, reps, first;
     uint64_t region, len;
     double aclk_mhz;
@@ -108,8 +111,13 @@ int main(int argc, char *argv[]) {
         if (!regions[k]) { std::cerr << "allocation failed for stream " << i << std::endl; return 1; }
         uint64_t *w = reinterpret_cast<uint64_t*>(regions[k]);
         for (uint64_t x = 0; x < region / 8; x++) w[x] = splitmix64((static_cast<uint64_t>(i) << 40) ^ x);
-        coyote::syncSg sg = {.addr = regions[k], .len = region};
-        t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);     // blocking: the driver migrates the pages to the card
+        // Blocking: the driver migrates the pages to the card. It migrates the WHOLE mapping that contains the first
+        // page (offload_user_pages -> migrate_to_card of all n_pages), so one call from the region's start moves all of
+        // it; the length only has to pass the library's MAX_TRANSFER_SIZE (128 MiB) check. Never offload from an address
+        // inside a buffer: the driver looks up mappings by their start page and its loop would not advance (box report
+        // 10/20 20:50; upstream Coyote behavior).
+        coyote::syncSg sg = {.addr = regions[k], .len = std::min<uint64_t>(region, coyote::MAX_TRANSFER_SIZE)};
+        t.invoke(coyote::CoyoteOper::LOCAL_OFFLOAD, sg);
     }
 
     // Card placement of every region (IOCTL_GET_CARD_PADDR): with --windows the region of stream i must sit in card
@@ -172,6 +180,7 @@ int main(int argc, char *argv[]) {
         t.setCSR(beats_per_stream, R_N_BEATS);
         t.setCSR(static_cast<uint64_t>(t.getCtid()), R_PID);
         t.setCSR(mask, R_MASK);
+        g_started = true;
         t.setCSR(1ull | (advance ? 2ull : 0ull) | (phys ? 4ull : 0ull), R_CTRL);
         auto t0 = std::chrono::steady_clock::now();
         while (!(t.getCSR(R_STATUS) & 1ull)) {
@@ -216,4 +225,16 @@ int main(int argc, char *argv[]) {
         total_bad += bad;
     }
     return total_bad ? 5 : 0;
+}
+
+int main(int argc, char *argv[]) {
+    // Library errors (allocation, ioctl, transfer limits) throw; report them with a defined exit code instead of an
+    // abort with a core dump (box report 10/20 20:50).
+    try {
+        return run(argc, argv);
+    } catch (const std::exception &e) {
+        std::cerr << "host library error " << (g_started ? "after a probe run was started (reprogram over JTAG and warm reboot "
+                     "before the next run)" : "before any probe run was started (the board is untouched)") << ": " << e.what() << std::endl;
+        return 7;
+    }
 }
