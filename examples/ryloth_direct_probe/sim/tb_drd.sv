@@ -22,14 +22,15 @@ AXI4 a2 (.aclk(aclk));
 AXI4 a3 (.aclk(aclk));
 
 logic          decouple = 1'b0;
+logic [7:0]    max_out = 8'd32;
 logic          cmd_valid = 1'b0, cmd_ready, cmd_last = 1'b0;
 logic [33:0]   cmd_addr = '0;
 logic [31:0]   cmd_len = '0;
 logic [511:0]  tdata;
 logic          tvalid, tlast, tready, busy;
 
-drd_reader #(.ADDR_BITS(34), .MAX_OUT(32), .BURST_BEATS(16)) dut (
-    .aclk(aclk), .aresetn(aresetn), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cmd_addr), .cmd_len(cmd_len),
+drd_reader #(.ADDR_BITS(34), .MAX_OUT(32), .BURST_BEATS(16), .FIFO_BEATS(512)) dut (
+    .aclk(aclk), .aresetn(aresetn), .max_out(max_out), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cmd_addr), .cmd_len(cmd_len),
     .cmd_last(cmd_last), .m_axi(a0), .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tready(tready), .busy(busy));
 axi_rd_decoupler #(.ADDR_BITS(34)) inst_dcpl (.decouple(decouple), .s_axi(a0), .m_axi(a1));
 axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(a1), .m_axi(a2));
@@ -44,7 +45,7 @@ endfunction
 // ---------------------------------------------------------------- memory model (slave on a3)
 int  p_ar = 100, p_r = 100, p_t = 100;     // percent of cycles with arready / rvalid / tready allowed
 int  lat = 20;
-int  errors = 0, n_ar = 0, max_out = 0;
+int  errors = 0, n_ar = 0, max_seen = 0, bp_cycles = 0;
 logic [33:0] q_beat [$];                   // per outstanding burst: first beat (in 64 B units)
 int          q_len  [$];
 longint      q_due  [$];
@@ -76,13 +77,14 @@ always @(posedge aclk) begin
         if (a3.arlen > 15)                     begin errors++; $display("ERROR AR len %0d", a3.arlen); end
         if ((b >> 4) != ((b + n - 1) >> 4))    begin errors++; $display("ERROR AR crosses 1 KiB at beat %h", b); end
         q_beat.push_back(b); q_len.push_back(n); q_due.push_back(now + lat + $urandom_range(lat / 4));
-        if (q_beat.size() > max_out) max_out = q_beat.size();
+        if (q_beat.size() > max_seen) max_seen = q_beat.size();
     end
     if (a3.rvalid && a3.rready) begin
         if (a3.rlast) begin void'(q_beat.pop_front()); void'(q_len.pop_front()); void'(q_due.pop_front()); r_idx <= 0; end
         else r_idx <= r_idx + 1;
     end
     if (a3.awvalid || a3.wvalid) begin errors++; $display("ERROR write channel active"); end
+    if (a3.rvalid && !a3.rready) bp_cycles++;
 end
 
 // ---------------------------------------------------------------- consumer
@@ -137,18 +139,18 @@ initial begin
         send(a, len, $urandom_range(1));
     end
     drain(400000);
-    $display("T1: 400 random commands, %0d bursts, max outstanding %0d, errors %0d", n_ar, max_out, errors);
+    $display("T1: 400 random commands, %0d bursts, max outstanding %0d, errors %0d", n_ar, max_seen, errors);
 
     // T2: one 1 MiB command, no back-pressure, latency 120 cycles
     p_ar = 100; p_r = 100; p_t = 100; lat = 120;
     repeat (20) @(posedge aclk);
-    n_beats = 0; t_first = -1; max_out = 0;
+    n_beats = 0; t_first = -1; max_seen = 0;
     begin
         longint t0; t0 = now;
         send(34'h1_2340_0000, 1 << 20, 1'b1);
         drain(100000);
         $display("T2: 1 MiB, %0d beats in %0d cycles from command (%0d after the first beat): %.3f beats/cycle after the first, max outstanding %0d",
-                 n_beats, t_last_beat - t0, t_last_beat - t_first, real'(n_beats) / real'(t_last_beat - t_first + 1), max_out);
+                 n_beats, t_last_beat - t0, t_last_beat - t_first, real'(n_beats) / real'(t_last_beat - t_first + 1), max_seen);
     end
 
     // T3: decoupled while a command is pending
@@ -162,6 +164,32 @@ initial begin
         decouple = 1'b0;
         drain(20000);
         $display("T3: decoupled 300 cycles: %0d bursts left the region; released: %0d bursts, completed, errors %0d", dec_ar, n_ar - ar0, errors);
+    end
+
+    // T4: max_out = 8 (the deadlock rule), no back-pressure, latency 48 cycles (the board's 0.32 us): still line rate?
+    max_out = 8'd8; p_ar = 100; p_r = 100; p_t = 100; lat = 48;
+    repeat (20) @(posedge aclk);
+    n_beats = 0; t_first = -1; max_seen = 0;
+    send(34'h2_0000_0000, 1 << 20, 1'b1);
+    drain(100000);
+    $display("T4: max_out 8, latency 48: %.3f beats/cycle after the first beat, max outstanding %0d (must be <= 8)",
+             real'(n_beats) / real'(t_last_beat - t_first + 1), max_seen);
+    if (max_seen > 8) begin errors++; $display("ERROR more than 8 bursts outstanding with max_out 8"); end
+
+    // T5: consumer stalls for 3000 cycles mid-command: the reader must never back-pressure the memory (credits), and
+    // must not lose or duplicate a beat
+    max_out = 8'd32; bp_cycles = 0; p_t = 100;
+    begin
+        int bp0; bp0 = bp_cycles;
+        fork send(34'h2_4000_0000, 1 << 20, 1'b1); join_none
+        repeat (400) @(posedge aclk);
+        p_t = 0;                                   // consumer stops
+        repeat (3000) @(posedge aclk);
+        if (a3.rvalid && !a3.rready) begin errors++; $display("ERROR memory back-pressured while the consumer stalled"); end
+        p_t = 100;
+        drain(100000);
+        $display("T5: consumer stalled 3000 cycles: memory-side back-pressure cycles %0d (must be 0), errors %0d", bp_cycles - bp0, errors);
+        if (bp_cycles - bp0 != 0) begin errors++; $display("ERROR back-pressure reached the memory side"); end
     end
 
     $display("RESULT: %s (errors %0d)", (errors == 0) ? "PASS" : "FAIL", errors);

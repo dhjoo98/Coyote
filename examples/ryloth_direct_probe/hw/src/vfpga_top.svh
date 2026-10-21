@@ -21,6 +21,8 @@
  * N_CARD_AXI .. N_CARD_AXI+N_DIRECT_RD-1 are direct read ports (axi_drd[k]), each driven by a drd_reader. For those,
  * VADDR is a card physical address and every request is one drd_reader command of LEN bytes (no MMU, no sq_rd).
  * N_DIRECT is read back at register 18.
+ * v4: register 19 MAX_OUT limits the bursts in flight per direct port (0 = 8); the readers keep an output FIFO with
+ * credits so the shell's read return is never back-pressured (deadlock seen on the board 10/20, step 5).
  */
 
 localparam integer NC = N_CARD_AXI;
@@ -36,6 +38,7 @@ logic                   csr_vaddr_we;
 logic [63:0]            csr_stride;      // unused: per-stream table below
 logic [31:0]            csr_sel_raw;
 logic [2:0]             csr_lane;
+logic [7:0]             csr_max_out;
 logic [63:0]            st_csum_sel;
 logic [31:0]            csr_len;
 logic [31:0]            csr_n_reps;
@@ -58,7 +61,7 @@ probe_ctrl_parser inst_ctrl (
     .csr_n_reps(csr_n_reps), .csr_n_beats(csr_n_beats), .csr_pid(csr_pid), .csr_mask(csr_mask), .csr_sel_raw(csr_sel_raw),
     .st_done(st_done), .st_cq_cnt(st_cq_cnt), .st_timer(st_timer), .st_t_first(st_t_first),
     .st_beats_sel(st_beats_sel), .st_t_last_sel(st_t_last_sel), .st_issued_sel(st_issued_sel),
-    .st_n_streams(32'(NS)), .csr_lane(csr_lane), .st_csum_sel(st_csum_sel), .st_n_direct(32'(ND))
+    .st_n_streams(32'(NS)), .csr_lane(csr_lane), .st_csum_sel(st_csum_sel), .st_n_direct(32'(ND)), .csr_max_out(csr_max_out)
 );
 
 // ---------------------------------------------------------------- state
@@ -172,8 +175,8 @@ for (genvar k = 0; k < ND; k++) begin : gen_drd
     logic [511:0] tdata;
     assign cmd_valid = running && active[NC+k] && !req_done[NC+k];
     assign drd_fire[k] = cmd_valid && cmd_ready;
-    drd_reader #(.ADDR_BITS(DRD_ADDR_BITS), .MAX_OUT(32), .BURST_BEATS(16)) inst_drd (
-        .aclk(aclk), .aresetn(aresetn),
+    drd_reader #(.ADDR_BITS(DRD_ADDR_BITS), .MAX_OUT(32), .BURST_BEATS(16), .FIFO_BEATS(512)) inst_drd (
+        .aclk(aclk), .aresetn(aresetn), .max_out(csr_max_out),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cur_vaddr[NC+k][DRD_ADDR_BITS-1:0]), .cmd_len(csr_len),
         .cmd_last(issued[NC+k] == csr_n_reps - 1),
         .m_axi(axi_drd[k]),

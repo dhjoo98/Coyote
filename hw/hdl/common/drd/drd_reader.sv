@@ -4,10 +4,18 @@
  * Takes commands (card physical address, length in bytes; both multiples of 64 B) and reads them with aligned INCR
  * bursts that never cross a BURST_BEATS x 64 B boundary (1 KiB by default: the HBM ports take at most 16 beats of
  * 32 B per stack, so each stack sees an aligned burst of at most 512 B and the shell's protocol converter has nothing
- * to split). Up to MAX_OUT bursts are outstanding (the HBM accepts 64 reads per port). Responses come back in order
- * (one ID), so data leaves as an AXI4-Stream in command order; tlast marks the last beat of a command issued with
- * cmd_last = 1. Commands are accepted one at a time; the next command starts issuing while the previous one's data
- * is still returning.
+ * to split). Responses come back in order (one ID), so data leaves as an AXI4-Stream in command order; tlast marks
+ * the last beat of a command issued with cmd_last = 1. Commands are accepted one at a time; the next command starts
+ * issuing while the previous one's data is still returning.
+ *
+ * Two rules keep the HBM read return free of back-pressure from this master (board 10/20 step 5: with several
+ * masters on one pseudo-channel pair, a master that stalls the return of one stack while waiting for the other
+ * stack deadlocks the pair through the shell's hbm_wide merge, which needs both halves of every beat):
+ *   1. at most max_out bursts in flight (runtime input, <= MAX_OUT). hbm_wide(_rd) holds each stack's half in a
+ *      128-beat FIFO, so with max_out <= 8 (8 x 16 beats) a stack can run ahead of the other by at most the FIFO depth
+ *      and the shell never stalls an HBM port on this master's account;
+ *   2. the R channel is always accepted: every beat requested has a reserved slot in the output FIFO (FIFO_BEATS,
+ *      credits in beats), so a slow consumer on m_t* stops new bursts from being issued instead of stalling the shell.
  */
 
 `timescale 1ns / 1ps
@@ -15,10 +23,13 @@
 module drd_reader #(
     parameter integer ADDR_BITS   = 34,
     parameter integer MAX_OUT     = 32,
-    parameter integer BURST_BEATS = 16
+    parameter integer BURST_BEATS = 16,
+    parameter integer FIFO_BEATS  = 512
 ) (
     input  logic                    aclk,
     input  logic                    aresetn,
+
+    input  logic [7:0]              max_out,     // bursts in flight allowed now (0 = 8); clamped to MAX_OUT
 
     input  logic                    cmd_valid,
     output logic                    cmd_ready,
@@ -39,6 +50,15 @@ module drd_reader #(
 localparam integer OUT_BITS = $clog2(MAX_OUT + 1);
 localparam integer PTR_BITS = (MAX_OUT > 1) ? $clog2(MAX_OUT) : 1;
 localparam integer BB_BITS  = $clog2(BURST_BEATS);
+localparam integer FB_BITS  = $clog2(FIFO_BEATS);
+localparam integer CR_BITS  = $clog2(FIFO_BEATS + 1);
+
+logic [OUT_BITS-1:0] max_out_eff;
+always_comb begin
+    if (max_out == 0)           max_out_eff = (MAX_OUT < 8) ? OUT_BITS'(MAX_OUT) : OUT_BITS'(8);
+    else if (max_out > MAX_OUT) max_out_eff = OUT_BITS'(MAX_OUT);
+    else                        max_out_eff = OUT_BITS'(max_out);
+end
 
 // ---------------------------------------------------------------- AR generator
 logic                   gen_active;
@@ -46,6 +66,7 @@ logic [ADDR_BITS-7:0]   gen_beat;        // address in 64 B beats
 logic [31-6:0]          gen_left;        // beats left in the current command
 logic                   gen_last;
 logic [OUT_BITS-1:0]    n_out;           // bursts in flight
+logic [CR_BITS-1:0]     credits;         // output FIFO beats not yet reserved by a burst in flight or held
 
 wire [BB_BITS:0]  to_boundary = BURST_BEATS - gen_beat[BB_BITS-1:0];
 wire [BB_BITS:0]  this_beats  = (gen_left < to_boundary) ? gen_left[BB_BITS:0] : to_boundary;
@@ -54,7 +75,7 @@ wire              ar_fire     = m_axi.arvalid && m_axi.arready;
 wire              r_fire      = m_axi.rvalid && m_axi.rready;
 wire              r_end       = r_fire && m_axi.rlast;
 
-assign m_axi.arvalid = gen_active && (n_out < MAX_OUT);
+assign m_axi.arvalid = gen_active && (n_out < max_out_eff) && (credits >= CR_BITS'(this_beats));
 assign m_axi.araddr  = {{(64-ADDR_BITS){1'b0}}, gen_beat, 6'b0};
 assign m_axi.arlen   = 8'(this_beats - 1);
 assign m_axi.arburst = 2'b01;
@@ -68,10 +89,13 @@ assign m_axi.arsize  = 3'b110;
 
 assign cmd_ready = !gen_active;
 
+wire pop;   // a beat leaves the reader (defined with the output FIFO below)
+
 always_ff @(posedge aclk) begin
     if (!aresetn) begin
         gen_active <= 1'b0;
         n_out      <= '0;
+        credits    <= CR_BITS'(FIFO_BEATS);
     end
     else begin
         if (cmd_valid && cmd_ready && (cmd_len[31:6] != 0)) begin
@@ -85,7 +109,8 @@ always_ff @(posedge aclk) begin
             gen_left <= gen_left - this_beats;
             if (final_burst) gen_active <= 1'b0;
         end
-        n_out <= n_out + (ar_fire ? 1 : 0) - (r_end ? 1 : 0);
+        n_out   <= n_out + (ar_fire ? 1 : 0) - (r_end ? 1 : 0);
+        credits <= credits - (ar_fire ? CR_BITS'(this_beats) : '0) + (pop ? 1 : 0);
     end
 end
 
@@ -106,13 +131,46 @@ always_ff @(posedge aclk) begin
     end
 end
 
-// ---------------------------------------------------------------- R channel -> stream
-assign m_tdata      = m_axi.rdata;
-assign m_tvalid     = m_axi.rvalid;
-assign m_tlast      = m_axi.rlast && lastq[rp];
-assign m_axi.rready = m_tready;
+// ---------------------------------------------------------------- R channel -> output FIFO -> stream
+// Every beat in flight has a reserved slot (credits), so the FIFO never overflows and rready can stay high; the
+// !full term is a guard only.
+logic [512:0]           mem [FIFO_BEATS];        // {tlast, data}
+logic [FB_BITS-1:0]     wp_f, rp_f;
+logic [FB_BITS:0]       count;
+logic                   out_valid;
+logic [512:0]           out_data;
 
-assign busy = gen_active || (n_out != 0);
+wire full  = (count == FIFO_BEATS);
+wire empty = (count == 0);
+wire push  = m_axi.rvalid && m_axi.rready;
+wire rd    = !empty && (!out_valid || m_tready);
+assign pop = m_tvalid && m_tready;
+
+assign m_axi.rready = !full;
+
+always_ff @(posedge aclk) begin
+    if (push) mem[wp_f] <= {m_axi.rlast && lastq[rp], m_axi.rdata};
+    if (rd)   out_data  <= mem[rp_f];
+end
+
+always_ff @(posedge aclk) begin
+    if (!aresetn) begin
+        wp_f <= '0; rp_f <= '0; count <= '0; out_valid <= 1'b0;
+    end
+    else begin
+        if (push) wp_f <= wp_f + 1;
+        if (rd)   rp_f <= rp_f + 1;
+        count <= count + (push ? 1 : 0) - (rd ? 1 : 0);
+        if (rd)            out_valid <= 1'b1;
+        else if (m_tready) out_valid <= 1'b0;
+    end
+end
+
+assign m_tvalid = out_valid;
+assign m_tdata  = out_data[511:0];
+assign m_tlast  = out_data[512];
+
+assign busy = gen_active || (n_out != 0) || !empty || out_valid;
 
 // ---------------------------------------------------------------- no write half
 assign m_axi.awaddr   = 0;

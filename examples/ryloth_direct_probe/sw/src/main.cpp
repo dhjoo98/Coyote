@@ -22,11 +22,13 @@
 #include <vector>
 #include <boost/program_options.hpp>
 #include <coyote/cThread.hpp>
+#include <coyote/cRcnfg.hpp>
 
 namespace {
 constexpr uint32_t R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18,
+                   R_MAX_OUT = 19;
 constexpr int DEFAULT_VFPGA_ID = 0;
 // deterministic fill: word k of stream i's region
 bool g_started = false;   // set once the first probe run has been started (for the exception message)
@@ -38,7 +40,8 @@ inline uint64_t splitmix64(uint64_t x) {
 }
 
 static int run(int argc, char *argv[]) {
-    unsigned n_streams_req, n_runs, reps, first;
+    unsigned n_streams_req, n_runs, reps, first, max_out;
+    std::string partial;
     uint64_t region, len;
     double aclk_mhz;
     bool advance, windows, phys, datacheck;
@@ -55,18 +58,31 @@ static int run(int argc, char *argv[]) {
         ("datacheck,d", boost::program_options::value<bool>(&datacheck)->default_value(true), "verify lane sums (probe v2 bitstreams only; use 0 with the probe15 v1 partial, whose 16-register map aliases register 16 onto CTRL)")
         ("phys,p", boost::program_options::value<bool>(&phys)->default_value(false), "stage 2: issue physical card reads (TLB bypass); needs the direct-HBM driver and a stage-2 shell")
         ("runs,r", boost::program_options::value<unsigned>(&n_runs)->default_value(5), "repetitions")
-        ("aclk", boost::program_options::value<double>(&aclk_mhz)->default_value(150.0), "ACLK in MHz (timer clock)");
+        ("aclk", boost::program_options::value<double>(&aclk_mhz)->default_value(150.0), "ACLK in MHz (timer clock)")
+        ("max_out,o", boost::program_options::value<unsigned>(&max_out)->default_value(8), "bursts in flight per direct read port, 1..32 (probe v4+; 8 keeps the shell's read return free of back-pressure, 32 reproduces the 10/20 step-5 stall)")
+        ("partial", boost::program_options::value<std::string>(&partial)->default_value(""), "load this user partial bitstream (vfpga_c0_0.bin) through Coyote app reconfiguration before the run (the shell must be idle)");
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, opts), vm);
     boost::program_options::notify(vm);
     if (vm.count("help")) { std::cout << opts << std::endl; return 0; }
 
+    if (max_out < 1 || max_out > 32) { std::cerr << "--max_out must be 1..32" << std::endl; return 2; }
+    if (!partial.empty()) {
+        std::cout << "loading user partial " << partial << " (app reconfiguration of vFPGA " << DEFAULT_VFPGA_ID << ")" << std::endl;
+        coyote::cRcnfg rc(0);
+        rc.reconfigureApp(partial, DEFAULT_VFPGA_ID);
+        std::cout << "partial loaded" << std::endl;
+    }
     coyote::cThread t(DEFAULT_VFPGA_ID, getpid());
     const unsigned n_build = static_cast<unsigned>(t.getCSR(R_N_STREAMS));
     // probe v3: the last n_direct streams are direct read ports (physical card addresses, no MMU); older partials read 0
     const unsigned n_direct = static_cast<unsigned>(t.getCSR(R_N_DIRECT)) & 0xffu;
     const unsigned first_direct = (n_direct <= n_build) ? n_build - n_direct : n_build;
     if (n_direct) std::cout << "direct read ports: streams " << first_direct << " .. " << n_build - 1 << std::endl;
+    // probe v4: register 19 limits the bursts in flight per direct port; older partials ignore the write (readback 0)
+    t.setCSR(max_out, R_MAX_OUT);
+    const bool has_max_out = (t.getCSR(R_MAX_OUT) & 0xffu) == max_out;
+    if (n_direct) std::cout << "bursts in flight per direct port: " << (has_max_out ? std::to_string(max_out) : std::string("32 (probe v3 partial, register 19 absent)")) << std::endl;
     if (first >= n_build) { std::cerr << "first stream " << first << " >= build streams " << n_build << std::endl; return 1; }
     unsigned S = (n_streams_req == 0) ? n_build - first : n_streams_req;
     if (first + S > n_build) S = n_build - first;
@@ -185,12 +201,25 @@ static int run(int argc, char *argv[]) {
         auto t0 = std::chrono::steady_clock::now();
         while (!(t.getCSR(R_STATUS) & 1ull)) {
             if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() > 30.0) {
+                // two snapshots 3 s apart separate a stall (nothing moves) from slow progress (box report 10/20 21:00)
+                std::vector<uint64_t> b1(S), b2(S);
                 std::cerr << "timeout; per-stream state:" << std::endl;
                 for (unsigned k = 0; k < S; k++) {
                     t.setCSR(first + k, R_SEL);
-                    std::cerr << "  stream " << first + k << " issued " << t.getCSR(R_ISSUED_SEL) << " beats " << t.getCSR(R_BEATS_SEL)
+                    b1[k] = t.getCSR(R_BEATS_SEL);
+                    std::cerr << "  stream " << first + k << " issued " << t.getCSR(R_ISSUED_SEL) << " beats " << b1[k]
                               << " of " << beats_per_stream << std::endl;
                 }
+                std::this_thread::sleep_for(std::chrono::seconds(3));
+                bool moved = false;
+                std::cerr << "3 s later:" << std::endl;
+                for (unsigned k = 0; k < S; k++) {
+                    t.setCSR(first + k, R_SEL);
+                    b2[k] = t.getCSR(R_BEATS_SEL);
+                    if (b2[k] != b1[k]) moved = true;
+                    std::cerr << "  stream " << first + k << " beats " << b2[k] << (b2[k] != b1[k] ? " (moving)" : " (no change)") << std::endl;
+                }
+                std::cerr << (moved ? "verdict: progressing slowly" : "verdict: STALLED (no stream moved in 3 s)") << std::endl;
                 std::cerr << "The probe has no abort and stays busy now: reprogram the full image over JTAG and warm reboot "
                              "before the next run." << std::endl;
                 return 3;

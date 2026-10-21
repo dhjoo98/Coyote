@@ -23,6 +23,7 @@
  *   16 LANE       w  64-bit word lane (0..7) for CSUM_SEL
  *   17 CSUM_SEL   r  sum (mod 2^64) of 64-bit word LANE of every beat received by stream SEL (data check)
  *   18 N_DIRECT   r  N_DIRECT_RD of this build (streams N_STREAMS-N_DIRECT .. N_STREAMS-1 are direct read ports)
+ *   19 MAX_OUT    w  bursts in flight per direct read port (0 = 8; the reader clamps to its MAX_OUT of 32)
  */
 
 import lynxTypes::*;
@@ -44,6 +45,7 @@ module probe_ctrl_parser (
   output logic [31:0]                 csr_mask,
   output logic [31:0]                 csr_sel_raw,
   output logic [2:0]                  csr_lane,
+  output logic [7:0]                  csr_max_out,
 
   input  logic                        st_done,
   input  logic [31:0]                 st_cq_cnt,
@@ -64,7 +66,7 @@ localparam integer AXI_ADDR_BITS = ADDR_LSB + ADDR_MSB;
 
 localparam integer R_CTRL = 0, R_STATUS = 1, R_TIMER = 2, R_VADDR = 3, R_LEN = 4, R_PID = 5, R_N_REPS = 6,
                    R_N_BEATS = 7, R_STRIDE = 8, R_MASK = 9, R_SEL = 10, R_BEATS_SEL = 11, R_T_LAST_SEL = 12,
-                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18;
+                   R_ISSUED_SEL = 13, R_N_STREAMS = 14, R_T_FIRST = 15, R_LANE = 16, R_CSUM_SEL = 17, R_N_DIRECT = 18, R_MAX_OUT = 19;
 
 logic [AXI_ADDR_BITS-1:0] axi_awaddr;
 logic axi_awready;
@@ -95,7 +97,7 @@ always_ff @(posedge aclk) begin
     csr_vaddr_we <= ctrl_reg_wren && (axi_awaddr[ADDR_LSB+:ADDR_MSB] == R_VADDR);
     if (ctrl_reg_wren) begin
       case (axi_awaddr[ADDR_LSB+:ADDR_MSB])
-        R_CTRL, R_VADDR, R_LEN, R_PID, R_N_REPS, R_N_BEATS, R_STRIDE, R_MASK, R_SEL, R_LANE:
+        R_CTRL, R_VADDR, R_LEN, R_PID, R_N_REPS, R_N_BEATS, R_STRIDE, R_MASK, R_SEL, R_LANE, R_MAX_OUT:
           for (int i = 0; i < (AXIL_DATA_BITS/8); i++) begin
             if (axi_ctrl.wstrb[i]) begin
               ctrl_reg[axi_awaddr[ADDR_LSB+:ADDR_MSB]][(i*8)+:8] <= axi_ctrl.wdata[(i*8)+:8];
@@ -136,6 +138,7 @@ always_ff @(posedge aclk) begin
         R_LANE:       axi_rdata <= ctrl_reg[R_LANE];
         R_CSUM_SEL:   axi_rdata <= st_csum_sel;
         R_N_DIRECT:   axi_rdata[31:0] <= st_n_direct;
+        R_MAX_OUT:    axi_rdata <= ctrl_reg[R_MAX_OUT];
         default: ;
       endcase
     end
@@ -154,6 +157,7 @@ always_comb begin
   csr_mask    = ctrl_reg[R_MASK][31:0];
   csr_sel_raw = ctrl_reg[R_SEL][31:0];
   csr_lane    = ctrl_reg[R_LANE][2:0];
+  csr_max_out = ctrl_reg[R_MAX_OUT][7:0];
 end
 
 // ---------------------------------------------------------------- AXI-Lite handshake (verbatim from 07_perf_fpga)
