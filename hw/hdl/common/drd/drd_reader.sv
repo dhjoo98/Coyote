@@ -75,7 +75,11 @@ wire              ar_fire     = m_axi.arvalid && m_axi.arready;
 wire              r_fire      = m_axi.rvalid && m_axi.rready;
 wire              r_end       = r_fire && m_axi.rlast;
 
-assign m_axi.arvalid = gen_active && (n_out < max_out_eff) && (credits >= CR_BITS'(this_beats));
+// Issue condition: a full burst's worth of credits must be free (BURST_BEATS >= this_beats), so arvalid depends only
+// on registered state and not on this_beats (gen_beat -> to_boundary -> 26-bit compare -> mux -> credit compare was
+// the reader's critical path at 200 MHz, 10/21: 9 logic levels into the CE of every gen_* register). The reservation
+// itself still charges the exact this_beats; a short final burst merely waits until 16 slots are free.
+assign m_axi.arvalid = gen_active && (n_out < max_out_eff) && (credits >= CR_BITS'(BURST_BEATS));
 assign m_axi.araddr  = {{(64-ADDR_BITS){1'b0}}, gen_beat, 6'b0};
 assign m_axi.arlen   = 8'(this_beats - 1);
 assign m_axi.arburst = 2'b01;

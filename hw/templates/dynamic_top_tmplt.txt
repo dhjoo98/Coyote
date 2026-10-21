@@ -275,31 +275,40 @@ module design_dynamic_top #(
 
     AXI4 axi_ddr_s0[1+N_REGIONS*N_CARD_AXI] ();
 
+    // Reset replica for the card DMA path (2026-10-21): the dynamic layer's aresetn comes from one flop in the static
+    // shell, which is locked when the user configuration is implemented, so the routes from it to the hundreds of
+    // synchronous reset pins in the DMA engines' FIFOs cannot be shortened by placement or phys_opt (ACLK 200 MHz PR
+    // pass: 479 of 557 failing endpoints, all pure route). A registered copy inside the dynamic layer, released one
+    // cycle later and replicated by synthesis, gives those loads a local source. The user wrapper, the decouplers and
+    // the host path keep the original reset.
+    (* max_fanout = 128 *) logic aresetn_card = 1'b0;
+    always_ff @(posedge aclk) aresetn_card <= aresetn;
+
     // XDMA card sync
     // ----------------------------------------------------------------------
     dmaIntf rd_XDMA_mig();
     dmaIntf wr_XDMA_mig();
     
-    dma_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_dma_reg_arr_s0_sync_in  (.aclk(aclk), .aresetn(aresetn), .s_req(rd_XDMA_mig), .m_req(m_card_dma_rd_req));
-    dma_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_dma_reg_arr_s0_sync_out (.aclk(aclk), .aresetn(aresetn), .s_req(wr_XDMA_mig), .m_req(m_card_dma_wr_req));
+    dma_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_dma_reg_arr_s0_sync_in  (.aclk(aclk), .aresetn(aresetn_card), .s_req(rd_XDMA_mig), .m_req(m_card_dma_rd_req));
+    dma_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_dma_reg_arr_s0_sync_out (.aclk(aclk), .aresetn(aresetn_card), .s_req(wr_XDMA_mig), .m_req(m_card_dma_wr_req));
     
     // Slice init stage sync 
     // ----------------------------------------------------------------------
     AXI4S axis_card_sync_in_s0();
     AXI4S axis_card_sync_out_s0();
 
-    axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_sync_in (.aclk(aclk), .aresetn(aresetn), .s_axis(s_axis_card),           .m_axis(axis_card_sync_in_s0));
-    axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_sync_out (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_card_sync_out_s0), .m_axis(m_axis_card));
+    axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_sync_in (.aclk(aclk), .aresetn(aresetn_card), .s_axis(s_axis_card),           .m_axis(axis_card_sync_in_s0));
+    axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_sync_out (.aclk(aclk), .aresetn(aresetn_card), .s_axis(axis_card_sync_out_s0), .m_axis(m_axis_card));
     
     // Memory sync 
     // ----------------------------------------------------------------------	
     dmaIntf rd_CDMA_mig();
     dmaIntf wr_CDMA_mig();
 
-    cdma inst_cdma_sync (.aclk(aclk), .aresetn(aresetn),
+    cdma inst_cdma_sync (.aclk(aclk), .aresetn(aresetn_card),
         .rd_CDMA(rd_CDMA_mig), .wr_CDMA(wr_CDMA_mig), .s_axis_ddr(axis_card_sync_in_s0), .m_axis_ddr(axis_card_sync_out_s0), .m_axi_ddr(axi_ddr_s0[0]));
     
-    axi_stripe #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_strp_sync (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_s0[0]), .m_axi(m_axi_ddr[0]));
+    axi_stripe #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_strp_sync (.aclk(aclk), .aresetn(aresetn_card), .s_axi(axi_ddr_s0[0]), .m_axi(m_axi_ddr[0]));
 
     // Slice init stage
     // ----------------------------------------------------------------------
@@ -310,8 +319,8 @@ module design_dynamic_top #(
 
     for(genvar i = 0; i < N_REGIONS; i++) begin
         for(genvar j = 0; j < N_CARD_AXI; j++) begin
-            axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_in  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_card_in_s0[i*N_CARD_AXI+j]),  .m_axis(axis_card_in_s1[i*N_CARD_AXI+j]));
-            axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_out (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_card_out_s1[i*N_CARD_AXI+j]), .m_axis(axis_card_out_s0[i*N_CARD_AXI+j]));
+            axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_in  (.aclk(aclk), .aresetn(aresetn_card), .s_axis(axis_card_in_s0[i*N_CARD_AXI+j]),  .m_axis(axis_card_in_s1[i*N_CARD_AXI+j]));
+            axis_reg_array #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_card_axis_reg_arr_s0_out (.aclk(aclk), .aresetn(aresetn_card), .s_axis(axis_card_out_s1[i*N_CARD_AXI+j]), .m_axis(axis_card_out_s0[i*N_CARD_AXI+j]));
         end
     end
     
@@ -322,10 +331,10 @@ module design_dynamic_top #(
 
     for(genvar i = 0; i < N_REGIONS; i++) begin
         for(genvar j = 0; j < N_CARD_AXI; j++) begin
-            cdma inst_cdma (.aclk(aclk), .aresetn(aresetn), 
+            cdma inst_cdma (.aclk(aclk), .aresetn(aresetn_card), 
                 .rd_CDMA(rd_CDMA_card[i*N_CARD_AXI+j]), .wr_CDMA(wr_CDMA_card[i*N_CARD_AXI+j]), .s_axis_ddr(axis_card_out_s0[i*N_CARD_AXI+j]), .m_axis_ddr(axis_card_in_s0[i*N_CARD_AXI+j]), .m_axi_ddr(axi_ddr_s0[i*N_CARD_AXI+j+1]));
         
-            axi_stripe #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_strp (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_s0[i*N_CARD_AXI+j+1]), .m_axi(m_axi_ddr[i*N_CARD_AXI+j+1]));
+            axi_stripe #(.N_STAGES(N_REG_DYN_CARD_S0)) inst_strp (.aclk(aclk), .aresetn(aresetn_card), .s_axi(axi_ddr_s0[i*N_CARD_AXI+j+1]), .m_axi(m_axi_ddr[i*N_CARD_AXI+j+1]));
         end
     end
 
