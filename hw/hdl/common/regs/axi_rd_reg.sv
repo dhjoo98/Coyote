@@ -31,6 +31,14 @@ logic         buf_valid;
 // output stalls.
 assign s_ready = !buf_valid;
 
+// Data registers load regardless of reset: with them under the reset branch, synthesis puts the global reset (one
+// flop, fan-out above 100k) into the clock enable of every data bit, which missed timing at 225 MHz (drd14r_225,
+// 10/21). Only the valid flags are reset.
+always_ff @(posedge aclk) begin
+    if (m_ready || !m_valid) m_data <= buf_valid ? buf_data : s_data;
+    else if (s_valid && s_ready) buf_data <= s_data;
+end
+
 always_ff @(posedge aclk) begin
     if (aresetn == 1'b0) begin
         m_valid   <= 1'b0;
@@ -40,17 +48,14 @@ always_ff @(posedge aclk) begin
         if (m_ready || !m_valid) begin
             if (buf_valid) begin
                 m_valid   <= 1'b1;
-                m_data    <= buf_data;
                 buf_valid <= 1'b0;
             end
             else begin
                 m_valid <= s_valid;
-                m_data  <= s_data;
             end
         end
         else if (s_valid && s_ready) begin
             buf_valid <= 1'b1;
-            buf_data  <= s_data;
         end
     end
 end

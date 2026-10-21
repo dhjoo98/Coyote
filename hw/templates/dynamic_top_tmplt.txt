@@ -338,7 +338,7 @@ module design_dynamic_top #(
     AXI4 axi_drd_s2 [N_DIRECT_RD] ();
 
     for(genvar k = 0; k < N_DIRECT_RD; k++) begin
-        axi_rd_decoupler #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_dcpl (.decouple(decouple_uclk[0]), .s_axi(axi_drd_ul[k]), .m_axi(axi_drd_s1[k]));
+        axi_rd_decoupler #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple_uclk[0]), .s_axi(axi_drd_ul[k]), .m_axi(axi_drd_s1[k]));
         axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
         axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s0 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
     end

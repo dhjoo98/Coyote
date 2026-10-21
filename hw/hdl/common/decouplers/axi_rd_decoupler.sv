@@ -13,14 +13,21 @@ import lynxTypes::*;
 module axi_rd_decoupler #(
     parameter integer ADDR_BITS = 34
 ) (
+    input  logic            aclk,
+    input  logic            aresetn,
     input  logic            decouple,
     AXI4.s                  s_axi,
     AXI4.m                  m_axi
 );
 
+// decouple is registered here: the region's decouple signal travels far, and its combinational use in the gates
+// below missed timing at 225 MHz (drd14r_225, 10/21). Reset value 1 (decoupled) is safe.
 logic dcpl;
 `ifdef EN_PR
-assign dcpl = decouple;
+always_ff @(posedge aclk) begin
+    if (aresetn == 1'b0) dcpl <= 1'b1;
+    else dcpl <= decouple;
+end
 `else
 assign dcpl = 1'b0;
 `endif

@@ -6,7 +6,7 @@ set -euo pipefail
 PKG=$1; HERE=$(cd "$(dirname "$0")" && pwd); R=$(cd "$HERE/../../.." && pwd); W=$(mktemp -d)
 source /tools/Xilinx/Vivado/2023.1/settings64.sh >/dev/null 2>&1
 cd "$W"
-xvlog -sv -i "$R/hw/hdl/pkg" "$PKG" "$R/hw/hdl/pkg/axi_intf.sv" \
+xvlog -sv -d EN_PR -i "$R/hw/hdl/pkg" "$PKG" "$R/hw/hdl/pkg/axi_intf.sv" \
   "$R/hw/hdl/common/drd/drd_reader.sv" "$R/hw/hdl/common/decouplers/axi_rd_decoupler.sv" "$R/hw/hdl/common/regs/axi_rd_reg.sv" \
   "$HERE/tb_drd.sv" > xvlog.log || { grep -E "ERROR" xvlog.log; exit 1; }
 xelab tb_drd -s tb_drd_snap -timescale 1ns/1ps > xelab.log || { grep -E "ERROR" xelab.log; exit 1; }

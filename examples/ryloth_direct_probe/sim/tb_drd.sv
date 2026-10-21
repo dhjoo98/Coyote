@@ -32,7 +32,7 @@ logic          tvalid, tlast, tready, busy;
 drd_reader #(.ADDR_BITS(34), .MAX_OUT(32), .BURST_BEATS(16), .FIFO_BEATS(512)) dut (
     .aclk(aclk), .aresetn(aresetn), .max_out(max_out), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cmd_addr), .cmd_len(cmd_len),
     .cmd_last(cmd_last), .m_axi(a0), .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tready(tready), .busy(busy));
-axi_rd_decoupler #(.ADDR_BITS(34)) inst_dcpl (.decouple(decouple), .s_axi(a0), .m_axi(a1));
+axi_rd_decoupler #(.ADDR_BITS(34)) inst_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple), .s_axi(a0), .m_axi(a1));
 axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(a1), .m_axi(a2));
 axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s0 (.aclk(aclk), .aresetn(aresetn), .s_axi(a2), .m_axi(a3));
 
