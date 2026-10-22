@@ -16,6 +16,11 @@
  *      and the shell never stalls an HBM port on this master's account;
  *   2. the R channel is always accepted: every beat requested has a reserved slot in the output FIFO (FIFO_BEATS,
  *      credits in beats), so a slow consumer on m_t* stops new bursts from being issued instead of stalling the shell.
+ *
+ * anns15d (2026-10-22): cmd_dest rides with each command and comes out as m_tdest on every beat of that command (the
+ * per-port demux routes dest 1 to the centroid lane, dest 0 to the score unit); a zero-length command with cmd_last
+ * produces one null beat (m_tkeep 0, m_tlast 1, m_tdest) behind all earlier data, so a consumer that received no
+ * data still sees the end of its query.
  */
 
 `timescale 1ns / 1ps
@@ -36,12 +41,15 @@ module drd_reader #(
     input  logic [ADDR_BITS-1:0]    cmd_addr,
     input  logic [31:0]             cmd_len,
     input  logic                    cmd_last,
+    input  logic                    cmd_dest,
 
     AXI4.m                          m_axi,
 
     output logic [511:0]            m_tdata,
     output logic                    m_tvalid,
     output logic                    m_tlast,
+    output logic                    m_tkeep_all,   // 0 only on a null beat
+    output logic                    m_tdest,
     input  logic                    m_tready,
 
     output logic                    busy
@@ -65,6 +73,9 @@ logic                   gen_active;
 logic [ADDR_BITS-7:0]   gen_beat;        // address in 64 B beats
 logic [31-6:0]          gen_left;        // beats left in the current command
 logic                   gen_last;
+logic                   gen_dest;
+logic                   null_pending;    // a zero-length last command waits for the bursts in flight, then one null beat
+logic                   null_dest;
 logic [OUT_BITS-1:0]    n_out;           // bursts in flight
 logic [CR_BITS-1:0]     credits;         // output FIFO beats not yet reserved by a burst in flight or held
 
@@ -91,15 +102,17 @@ assign m_axi.arqos   = 4'b0;
 assign m_axi.arregion = 4'b0;
 assign m_axi.arsize  = 3'b110;
 
-assign cmd_ready = !gen_active;
+assign cmd_ready = !gen_active && !null_pending;
 
 wire pop;   // a beat leaves the reader (defined with the output FIFO below)
+wire null_push;   // the null beat enters the output FIFO (defined below)
 
 always_ff @(posedge aclk) begin
     if (!aresetn) begin
-        gen_active <= 1'b0;
-        n_out      <= '0;
-        credits    <= CR_BITS'(FIFO_BEATS);
+        gen_active   <= 1'b0;
+        null_pending <= 1'b0;
+        n_out        <= '0;
+        credits      <= CR_BITS'(FIFO_BEATS);
     end
     else begin
         if (cmd_valid && cmd_ready && (cmd_len[31:6] != 0)) begin
@@ -107,6 +120,11 @@ always_ff @(posedge aclk) begin
             gen_beat   <= cmd_addr[ADDR_BITS-1:6];
             gen_left   <= cmd_len[31:6];
             gen_last   <= cmd_last;
+            gen_dest   <= cmd_dest;
+        end
+        else if (cmd_valid && cmd_ready && cmd_last) begin   // zero-length last command: one null beat later
+            null_pending <= 1'b1;
+            null_dest    <= cmd_dest;
         end
         else if (ar_fire) begin
             gen_beat <= gen_beat + this_beats;
@@ -115,11 +133,13 @@ always_ff @(posedge aclk) begin
         end
         n_out   <= n_out + (ar_fire ? 1 : 0) - (r_end ? 1 : 0);
         credits <= credits - (ar_fire ? CR_BITS'(this_beats) : '0) + (pop ? 1 : 0);
+        if (null_push) null_pending <= 1'b0;
     end
 end
 
-// ---------------------------------------------------------------- tlast bookkeeping (one bit per burst in flight)
+// ---------------------------------------------------------------- tlast / dest bookkeeping (per burst in flight)
 logic [MAX_OUT-1:0]     lastq;
+logic [MAX_OUT-1:0]     destq;
 logic [PTR_BITS-1:0]    wp, rp;
 
 always_ff @(posedge aclk) begin
@@ -129,6 +149,7 @@ always_ff @(posedge aclk) begin
     else begin
         if (ar_fire) begin
             lastq[wp] <= final_burst && gen_last;
+            destq[wp] <= gen_dest;
             wp <= (wp == PTR_BITS'(MAX_OUT - 1)) ? '0 : wp + 1;
         end
         if (r_end) rp <= (rp == PTR_BITS'(MAX_OUT - 1)) ? '0 : rp + 1;
@@ -138,22 +159,26 @@ end
 // ---------------------------------------------------------------- R channel -> output FIFO -> stream
 // Every beat in flight has a reserved slot (credits), so the FIFO never overflows and rready can stay high; the
 // !full term is a guard only.
-logic [512:0]           mem [FIFO_BEATS];        // {tlast, data}
+logic [514:0]           mem [FIFO_BEATS];        // {null, dest, tlast, data}
 logic [FB_BITS-1:0]     wp_f, rp_f;
 logic [FB_BITS:0]       count;
 logic                   out_valid;
-logic [512:0]           out_data;
+logic [514:0]           out_data;
 
 wire full  = (count == FIFO_BEATS);
 wire empty = (count == 0);
-wire push  = m_axi.rvalid && m_axi.rready;
+wire r_push = m_axi.rvalid && m_axi.rready;
+// the null beat takes a slot once every earlier burst has returned and no data is arriving this cycle
+assign null_push = null_pending && (n_out == 0) && !r_push && !full;
+wire push  = r_push || null_push;
 wire rd    = !empty && (!out_valid || m_tready);
 assign pop = m_tvalid && m_tready;
 
 assign m_axi.rready = !full;
 
 always_ff @(posedge aclk) begin
-    if (push) mem[wp_f] <= {m_axi.rlast && lastq[rp], m_axi.rdata};
+    if (push) mem[wp_f] <= r_push ? {1'b0, destq[rp], m_axi.rlast && lastq[rp], m_axi.rdata}
+                                  : {1'b1, null_dest, 1'b1, 512'b0};
     if (rd)   out_data  <= mem[rp_f];
 end
 
@@ -170,11 +195,13 @@ always_ff @(posedge aclk) begin
     end
 end
 
-assign m_tvalid = out_valid;
-assign m_tdata  = out_data[511:0];
-assign m_tlast  = out_data[512];
+assign m_tvalid    = out_valid;
+assign m_tdata     = out_data[511:0];
+assign m_tlast     = out_data[512];
+assign m_tdest     = out_data[513];
+assign m_tkeep_all = !out_data[514];
 
-assign busy = gen_active || (n_out != 0) || !empty || out_valid;
+assign busy = gen_active || null_pending || (n_out != 0) || !empty || out_valid;
 
 // ---------------------------------------------------------------- no write half
 assign m_axi.awaddr   = 0;

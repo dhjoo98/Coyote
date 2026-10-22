@@ -28,10 +28,13 @@ logic [33:0]   cmd_addr = '0;
 logic [31:0]   cmd_len = '0;
 logic [511:0]  tdata;
 logic          tvalid, tlast, tready, busy;
+logic          cmd_dest = 1'b0, tdest, tkeep_all;
+int            n_null = 0;
 
 drd_reader #(.ADDR_BITS(34), .MAX_OUT(32), .BURST_BEATS(16), .FIFO_BEATS(512)) dut (
     .aclk(aclk), .aresetn(aresetn), .max_out(max_out), .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cmd_addr), .cmd_len(cmd_len),
-    .cmd_last(cmd_last), .m_axi(a0), .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tready(tready), .busy(busy));
+    .cmd_last(cmd_last), .cmd_dest(cmd_dest), .m_axi(a0), .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tdest(tdest),
+    .m_tkeep_all(tkeep_all), .m_tready(tready), .busy(busy));
 axi_rd_decoupler #(.ADDR_BITS(34)) inst_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple), .s_axi(a0), .m_axi(a1));
 axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(a1), .m_axi(a2));
 axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s0 (.aclk(aclk), .aresetn(aresetn), .s_axi(a2), .m_axi(a3));
@@ -90,17 +93,24 @@ end
 // ---------------------------------------------------------------- consumer
 logic [33:0] exp_beat [$];
 logic        exp_last [$];
+logic        exp_dest [$];
 longint      n_beats = 0, t_first = -1, t_last_beat = 0;
 
 always @(posedge aclk) tready <= ($urandom_range(99) < p_t);
 
 always @(posedge aclk) begin
-    if (tvalid && tready) begin
+    if (tvalid && tready && !tkeep_all) begin   // a null beat: tlast set, after every expected beat
+        n_null++;
+        if (!tlast) begin errors++; $display("ERROR null beat without tlast"); end
+        if (exp_beat.size() != 0) begin errors++; $display("ERROR null beat before %0d expected beats", exp_beat.size()); end
+    end
+    else if (tvalid && tready) begin
         if (exp_beat.size() == 0) begin errors++; $display("ERROR unexpected beat"); end
         else begin
             if (tdata !== word(exp_beat[0])) begin errors++; if (errors < 10) $display("ERROR data at beat %h", exp_beat[0]); end
             if (tlast !== exp_last[0])       begin errors++; if (errors < 10) $display("ERROR tlast at beat %h: %b", exp_beat[0], tlast); end
-            void'(exp_beat.pop_front()); void'(exp_last.pop_front());
+            if (tdest !== exp_dest[0])       begin errors++; if (errors < 10) $display("ERROR tdest at beat %h: %b", exp_beat[0], tdest); end
+            void'(exp_beat.pop_front()); void'(exp_last.pop_front()); void'(exp_dest.pop_front());
         end
         n_beats++;
         if (t_first < 0) t_first = now;
@@ -112,6 +122,7 @@ task automatic send(input logic [33:0] addr, input int bytes, input logic last);
     for (int k = 0; k < bytes / 64; k++) begin
         exp_beat.push_back(addr[33:6] + k);
         exp_last.push_back(last && (k == bytes / 64 - 1));
+        exp_dest.push_back(cmd_dest);
     end
     @(negedge aclk);
     cmd_valid = 1'b1; cmd_addr = addr; cmd_len = bytes; cmd_last = last;
@@ -190,6 +201,26 @@ initial begin
         drain(100000);
         $display("T5: consumer stalled 3000 cycles: memory-side back-pressure cycles %0d (must be 0), errors %0d", bp_cycles - bp0, errors);
         if (bp_cycles - bp0 != 0) begin errors++; $display("ERROR back-pressure reached the memory side"); end
+    end
+
+    // T6 (anns15d): the dest bit rides with each command; a zero-length last command gives one null beat (tkeep 0,
+    // tlast 1) behind all earlier data; a zero-length command without last gives nothing
+    max_out = 8'd8; p_t = 70; p_ar = 80; p_r = 80;
+    begin
+        int nn0; nn0 = n_null;
+        cmd_dest = 1'b1; send(34'h0_4100_0000, 64 * 300, 1'b0);     // a "centroid slice": dest 1, no last
+        cmd_dest = 1'b0; send(34'h1_8000_0000, 64 * 100, 1'b0);     // list stripes: dest 0
+        send(34'h2_0000_0000, 64 * 20, 1'b0);
+        send(34'h0, 0, 1'b0);                                        // empty, not last: nothing
+        send(34'h0, 0, 1'b1);                                        // empty + last: the null beat, after all data
+        drain(200000);
+        repeat (50) @(posedge aclk);
+        if (n_null - nn0 != 1) begin errors++; $display("ERROR %0d null beats, expected 1", n_null - nn0); end
+        cmd_dest = 1'b1; send(34'h0_4100_0000, 64 * 48, 1'b0);     // next query: dest 1 again, then a data last
+        cmd_dest = 1'b0; send(34'h1_8000_0000, 64 * 24, 1'b1);
+        drain(200000);
+        if (n_null - nn0 != 1) begin errors++; $display("ERROR null beat count changed to %0d", n_null - nn0); end
+        $display("T6: dest on every beat, null last beat behind the data: null beats %0d (expected 1), errors %0d", n_null - nn0, errors);
     end
 
     $display("RESULT: %s (errors %0d)", (errors == 0) ? "PASS" : "FAIL", errors);

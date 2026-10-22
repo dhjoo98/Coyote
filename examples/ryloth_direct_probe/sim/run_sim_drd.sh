@@ -10,5 +10,5 @@ xvlog -sv -d EN_PR -i "$R/hw/hdl/pkg" "$PKG" "$R/hw/hdl/pkg/axi_intf.sv" \
   "$R/hw/hdl/common/drd/drd_reader.sv" "$R/hw/hdl/common/decouplers/axi_rd_decoupler.sv" "$R/hw/hdl/common/regs/axi_rd_reg.sv" \
   "$HERE/tb_drd.sv" > xvlog.log || { grep -E "ERROR" xvlog.log; exit 1; }
 xelab tb_drd -s tb_drd_snap -timescale 1ns/1ps > xelab.log || { grep -E "ERROR" xelab.log; exit 1; }
-xsim tb_drd_snap -R | grep -E "T[1-5]:|ERROR|RESULT" | head -30
+xsim tb_drd_snap -R | grep -E "T[1-6]:|ERROR|RESULT" | head -30
 echo "(work dir $W)"
