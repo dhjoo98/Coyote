@@ -5,9 +5,12 @@
  *
  * AR (ACLK -> HCLK): one async FIFO entry per request; the length doubles (a 128-byte beat is two 64-byte beats), the
  * address is unchanged (requests are 128-byte aligned by the reader).
- * R (HCLK -> ACLK): two consecutive 512-bit beats of a burst are packed into one 1024-bit beat (the first beat is the
- * lower address, i.e. bits [511:0]) and written as one entry of an async FIFO; rlast is the second beat's. Bursts are
- * whole 128-byte beats, so the pairing never straddles a burst.
+ * R (HCLK -> ACLK): the beats of a burst alternate between two 515-bit async FIFOs (even beats = lower address =
+ * bits [511:0], odd beats = bits [1023:512]); the ACLK side pops both at once as one 1024-bit beat, rlast from the odd
+ * one. Bursts are whole 128-byte beats, so the pairing never straddles a burst. Each beat is registered before its FIFO
+ * write and back-pressure comes from the FIFOs' programmable-full flags (with room for the registered beats), so no
+ * combinational path runs from the upstream valid into the FIFO write enables. (The first version wrote one 1027-bit
+ * FIFO from a pairing register and missed 300 MHz on that write enable's fan-out: drd14w, 10/23 02:55.)
  *
  * Back-pressure: the user-side reader (drd_reader) reserves space for every beat it requests and always accepts R, so
  * this FIFO drains at the rate it fills. If it ever filled, the stall would reach hbm_wide_rd's per-stack FIFOs, which
@@ -29,7 +32,7 @@ module drd_gearbox #(
 );
 
 localparam integer AR_BITS = ADDR_BITS + 8;
-localparam integer R_BITS  = 1024 + 3;   // {rresp, rlast, data}
+localparam integer R_BITS  = 512 + 3;    // {rresp, rlast, data} per half
 
 // ---------------------------------------------------------------- AR: ACLK -> HCLK
 logic                   ar_full, ar_empty, ar_wr_busy, ar_rd_busy;
@@ -63,42 +66,45 @@ assign m_axi.arqos    = 4'b0;
 assign m_axi.arregion = 4'b0;
 assign m_axi.arsize   = 3'b110;
 
-// ---------------------------------------------------------------- R: HCLK -> ACLK, two 512-bit beats per entry
-logic                   r_full, r_empty, r_wr_busy, r_rd_busy;
-logic [R_BITS-1:0]      r_dout;
-logic                   half_valid;
-logic [511:0]           half_data;
-logic [1:0]             half_resp;
+// ---------------------------------------------------------------- R: HCLK -> ACLK, even / odd beats in two FIFOs
+logic                   r_q_vld, r_q_odd, r_odd;
+logic [R_BITS-1:0]      r_q_data;
+logic [1:0]             pf, wr_busy, rd_busy, empty;
+logic [R_BITS-1:0]      dout [2];
 
 wire r_fire = m_axi.rvalid && m_axi.rready;
-wire r_wr   = r_fire && half_valid;
-assign m_axi.rready = !r_full && !r_wr_busy;
+assign m_axi.rready = !(|pf) && !(|wr_busy);
 
+always_ff @(posedge hclk) r_q_data <= {m_axi.rresp, m_axi.rlast, m_axi.rdata};   // no enable: loaded every cycle
 always_ff @(posedge hclk) begin
-    if (!hresetn) half_valid <= 1'b0;
-    else if (r_fire) half_valid <= !half_valid;
-end
-always_ff @(posedge hclk) begin
-    if (r_fire && !half_valid) begin half_data <= m_axi.rdata; half_resp <= m_axi.rresp; end
+    if (!hresetn) begin r_q_vld <= 1'b0; r_q_odd <= 1'b0; r_odd <= 1'b0; end
+    else begin
+        r_q_vld <= r_fire;
+        r_q_odd <= r_odd;
+        if (r_fire) r_odd <= ~r_odd;
+    end
 end
 
-xpm_fifo_async #(
-    .FIFO_MEMORY_TYPE("distributed"), .FIFO_WRITE_DEPTH(32), .WRITE_DATA_WIDTH(R_BITS), .READ_DATA_WIDTH(R_BITS),
-    .READ_MODE("fwft"), .FIFO_READ_LATENCY(0), .CDC_SYNC_STAGES(2), .ECC_MODE("no_ecc"), .RELATED_CLOCKS(0),
-    .USE_ADV_FEATURES("0000"), .WAKEUP_TIME(0), .DOUT_RESET_VALUE("0"), .FULL_RESET_VALUE(1)
-) inst_r_fifo (
-    .wr_clk(hclk), .rst(!hresetn), .wr_en(r_wr), .din({half_resp | m_axi.rresp, m_axi.rlast, m_axi.rdata, half_data}),
-    .full(r_full), .wr_rst_busy(r_wr_busy),
-    .rd_clk(aclk), .rd_en(s_axi.rvalid && s_axi.rready), .dout(r_dout), .empty(r_empty), .rd_rst_busy(r_rd_busy),
-    .sleep(1'b0), .injectsbiterr(1'b0), .injectdbiterr(1'b0),
-    .overflow(), .prog_full(), .wr_data_count(), .almost_full(), .wr_ack(), .underflow(), .prog_empty(),
-    .rd_data_count(), .almost_empty(), .data_valid(), .sbiterr(), .dbiterr()
-);
+wire pop = s_axi.rvalid && s_axi.rready;
+for (genvar h = 0; h < 2; h++) begin : g_half
+    xpm_fifo_async #(
+        .FIFO_MEMORY_TYPE("distributed"), .FIFO_WRITE_DEPTH(32), .WRITE_DATA_WIDTH(R_BITS), .READ_DATA_WIDTH(R_BITS),
+        .READ_MODE("fwft"), .FIFO_READ_LATENCY(0), .CDC_SYNC_STAGES(2), .ECC_MODE("no_ecc"), .RELATED_CLOCKS(0),
+        .USE_ADV_FEATURES("0002"), .PROG_FULL_THRESH(22), .WAKEUP_TIME(0), .DOUT_RESET_VALUE("0"), .FULL_RESET_VALUE(1)
+    ) inst_r_fifo (
+        .wr_clk(hclk), .rst(!hresetn), .wr_en(r_q_vld && (r_q_odd == h)), .din(r_q_data),
+        .full(), .prog_full(pf[h]), .wr_rst_busy(wr_busy[h]),
+        .rd_clk(aclk), .rd_en(pop), .dout(dout[h]), .empty(empty[h]), .rd_rst_busy(rd_busy[h]),
+        .sleep(1'b0), .injectsbiterr(1'b0), .injectdbiterr(1'b0),
+        .overflow(), .wr_data_count(), .almost_full(), .wr_ack(), .underflow(), .prog_empty(),
+        .rd_data_count(), .almost_empty(), .data_valid(), .sbiterr(), .dbiterr()
+    );
+end
 
-assign s_axi.rvalid = !r_empty && !r_rd_busy;
-assign s_axi.rdata  = r_dout[1023:0];
-assign s_axi.rlast  = r_dout[1024];
-assign s_axi.rresp  = r_dout[1026:1025];
+assign s_axi.rvalid = !(|empty) && !(|rd_busy);
+assign s_axi.rdata  = {dout[1][511:0], dout[0][511:0]};
+assign s_axi.rlast  = dout[1][512];
+assign s_axi.rresp  = dout[0][514:513] | dout[1][514:513];
 assign s_axi.rid    = 0;
 
 // ---------------------------------------------------------------- no write half

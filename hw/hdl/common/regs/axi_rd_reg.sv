@@ -62,9 +62,57 @@ end
 
 endmodule
 
+// Scaling step B (10/23 night): 2-entry FIFO skid. The data registers' enables come only from local state (write
+// pointer and count), so neither the upstream valid nor the downstream ready fans out to the 515 data enables; at
+// HCLK 300 MHz the original skid's enable (downstream ready -> 515 CEs, across the SLR0/SLR1 boundary) missed timing
+// (drd14w, 10/23 02:55). s_ready = count < 2 and m_valid = count > 0 come from the local count; full throughput.
+module axi_rd_skid2 #(
+    parameter integer W = 32
+) (
+    input  logic            aclk,
+    input  logic            aresetn,
+    input  logic            s_valid,
+    output logic            s_ready,
+    input  logic [W-1:0]    s_data,
+    output logic            m_valid,
+    input  logic            m_ready,
+    output logic [W-1:0]    m_data
+);
+
+logic [W-1:0] mem0, mem1;
+logic         wp, rp;
+logic [1:0]   cnt;
+
+assign s_ready = (cnt != 2'd2);
+assign m_valid = (cnt != 2'd0);
+assign m_data  = rp ? mem1 : mem0;
+
+wire wr = s_valid && s_ready;
+wire rd = m_valid && m_ready;
+
+// the free slot loads every cycle (a beat that is not accepted is simply overwritten); a full buffer loads nothing
+always_ff @(posedge aclk) begin
+    if (!wp && (cnt != 2'd2)) mem0 <= s_data;
+    if ( wp && (cnt != 2'd2)) mem1 <= s_data;
+end
+
+always_ff @(posedge aclk) begin
+    if (aresetn == 1'b0) begin
+        wp <= 1'b0; rp <= 1'b0; cnt <= 2'd0;
+    end
+    else begin
+        if (wr) wp <= ~wp;
+        if (rd) rp <= ~rp;
+        cnt <= cnt + (wr ? 2'd1 : 2'd0) - (rd ? 2'd1 : 2'd0);
+    end
+end
+
+endmodule
+
 module axi_rd_reg #(
     parameter integer ADDR_BITS = 34,
-    parameter integer DATA_BITS = AXI_DATA_BITS
+    parameter integer DATA_BITS = AXI_DATA_BITS,
+    parameter integer SKID2     = 0       // 1: axi_rd_skid2 (local data enables; the HCLK stages of the wide direct ports)
 ) (
     input  logic            aclk,
     input  logic            aresetn,
@@ -81,17 +129,30 @@ logic [R_BITS-1:0]  r_s, r_m;
 assign ar_s = {s_axi.araddr[ADDR_BITS-1:0], s_axi.arlen};
 assign r_s  = {m_axi.rdata, m_axi.rresp, m_axi.rlast};
 
-axi_rd_skid #(.W(AR_BITS)) inst_ar (
-    .aclk(aclk), .aresetn(aresetn),
-    .s_valid(s_axi.arvalid), .s_ready(s_axi.arready), .s_data(ar_s),
-    .m_valid(m_axi.arvalid), .m_ready(m_axi.arready), .m_data(ar_m)
-);
-
-axi_rd_skid #(.W(R_BITS)) inst_r (
-    .aclk(aclk), .aresetn(aresetn),
-    .s_valid(m_axi.rvalid), .s_ready(m_axi.rready), .s_data(r_s),
-    .m_valid(s_axi.rvalid), .m_ready(s_axi.rready), .m_data(r_m)
-);
+if (SKID2) begin : g_skid2
+    axi_rd_skid2 #(.W(AR_BITS)) inst_ar (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_valid(s_axi.arvalid), .s_ready(s_axi.arready), .s_data(ar_s),
+        .m_valid(m_axi.arvalid), .m_ready(m_axi.arready), .m_data(ar_m)
+    );
+    axi_rd_skid2 #(.W(R_BITS)) inst_r (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_valid(m_axi.rvalid), .s_ready(m_axi.rready), .s_data(r_s),
+        .m_valid(s_axi.rvalid), .m_ready(s_axi.rready), .m_data(r_m)
+    );
+end
+else begin : g_skid
+    axi_rd_skid #(.W(AR_BITS)) inst_ar (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_valid(s_axi.arvalid), .s_ready(s_axi.arready), .s_data(ar_s),
+        .m_valid(m_axi.arvalid), .m_ready(m_axi.arready), .m_data(ar_m)
+    );
+    axi_rd_skid #(.W(R_BITS)) inst_r (
+        .aclk(aclk), .aresetn(aresetn),
+        .s_valid(m_axi.rvalid), .s_ready(m_axi.rready), .s_data(r_s),
+        .m_valid(s_axi.rvalid), .m_ready(s_axi.rready), .m_data(r_m)
+    );
+end
 
 // AR fields that are fixed for direct reads
 assign m_axi.araddr   = {{(64-ADDR_BITS){1'b0}}, ar_m[AR_BITS-1:8]};
@@ -138,7 +199,8 @@ endmodule
 module axi_rd_reg_array #(
     parameter integer N_STAGES = 2,
     parameter integer ADDR_BITS = 34,
-    parameter integer DATA_BITS = AXI_DATA_BITS
+    parameter integer DATA_BITS = AXI_DATA_BITS,
+    parameter integer SKID2     = 0
 ) (
     input  logic            aclk,
     input  logic            aresetn,
@@ -154,7 +216,7 @@ else begin
     `AXI_ASSIGN(s_axi, axi_s[0])
     `AXI_ASSIGN(axi_s[N_STAGES], m_axi)
     for (genvar i = 0; i < N_STAGES; i++) begin
-        axi_rd_reg #(.ADDR_BITS(ADDR_BITS), .DATA_BITS(DATA_BITS)) inst_reg (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_s[i]), .m_axi(axi_s[i+1]));
+        axi_rd_reg #(.ADDR_BITS(ADDR_BITS), .DATA_BITS(DATA_BITS), .SKID2(SKID2)) inst_reg (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_s[i]), .m_axi(axi_s[i+1]));
     end
 end
 

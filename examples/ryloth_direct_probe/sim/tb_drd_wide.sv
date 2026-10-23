@@ -42,8 +42,8 @@ drd_reader #(.ADDR_BITS(34), .DATA_BITS(1024), .MAX_OUT(32), .BURST_BEATS(8), .F
     .m_tkeep_all(tkeep_all), .m_tready(tready), .busy(busy));
 axi_rd_decoupler #(.ADDR_BITS(34)) inst_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple), .s_axi(a0), .m_axi(a1));
 drd_gearbox #(.ADDR_BITS(34)) inst_gbx (.aclk(aclk), .aresetn(aresetn), .hclk(hclk), .hresetn(hresetn), .s_axi(a1), .m_axi(a2));
-axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34)) inst_s1 (.aclk(hclk), .aresetn(hresetn), .s_axi(a2), .m_axi(a3));
-axi_rd_reg_array #(.N_STAGES(3), .ADDR_BITS(34)) inst_s0 (.aclk(hclk), .aresetn(hresetn), .s_axi(a3), .m_axi(a4));
+axi_rd_reg_array #(.N_STAGES(2), .ADDR_BITS(34), .SKID2(1)) inst_s1 (.aclk(hclk), .aresetn(hresetn), .s_axi(a2), .m_axi(a3));
+axi_rd_reg_array #(.N_STAGES(3), .ADDR_BITS(34), .SKID2(1)) inst_s0 (.aclk(hclk), .aresetn(hresetn), .s_axi(a3), .m_axi(a4));
 
 function automatic logic [511:0] word(input logic [33:0] beat);   // beat = address in 64 B units
     logic [511:0] w;

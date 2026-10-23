@@ -355,13 +355,17 @@ module design_dynamic_top #(
     AXI4 axi_drd_s2 [N_DIRECT_RD] ();
 
     for(genvar k = 0; k < N_DIRECT_RD; k++) begin
-        logic hresetn_drd;   // ACLK reset synchronized to HCLK, one per port next to its loads
-        xpm_cdc_async_rst #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .RST_ACTIVE_HIGH(0)) inst_drd_hrst (
-            .src_arst(aresetn), .dest_clk(hclk_drd), .dest_arst(hresetn_drd));
+        // ACLK reset synchronized to HCLK next to its loads: one for the gearbox and the user-side stages (SLR1), one
+        // for the memory-side stages (SLR0); a single synchronizer drove both SLRs and missed 300 MHz (drd14w, 10/23)
+        logic hresetn_drd_u, hresetn_drd_m;
+        xpm_cdc_async_rst #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .RST_ACTIVE_HIGH(0)) inst_drd_hrst_u (
+            .src_arst(aresetn), .dest_clk(hclk_drd), .dest_arst(hresetn_drd_u));
+        xpm_cdc_async_rst #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .RST_ACTIVE_HIGH(0)) inst_drd_hrst_m (
+            .src_arst(aresetn), .dest_clk(hclk_drd), .dest_arst(hresetn_drd_m));
         axi_rd_decoupler #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple_uclk[0]), .s_axi(axi_drd_ul[k]), .m_axi(axi_drd_dc[k]));
-        drd_gearbox #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_gbx (.aclk(aclk), .aresetn(aresetn), .hclk(hclk_drd), .hresetn(hresetn_drd), .s_axi(axi_drd_dc[k]), .m_axi(axi_drd_s1[k]));
-        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s1 (.aclk(hclk_drd), .aresetn(hresetn_drd), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
-        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s0 (.aclk(hclk_drd), .aresetn(hresetn_drd), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
+        drd_gearbox #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_gbx (.aclk(aclk), .aresetn(aresetn), .hclk(hclk_drd), .hresetn(hresetn_drd_u), .s_axi(axi_drd_dc[k]), .m_axi(axi_drd_s1[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS), .SKID2(1)) inst_drd_reg_s1 (.aclk(hclk_drd), .aresetn(hresetn_drd_u), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS), .SKID2(1)) inst_drd_reg_s0 (.aclk(hclk_drd), .aresetn(hresetn_drd_m), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
     end
 {% else %}
     AXI4 axi_drd_ul [N_DIRECT_RD] ();

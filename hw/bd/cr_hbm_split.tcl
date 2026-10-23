@@ -91,7 +91,7 @@ proc create_hier_cell_init_logic { parentCell nameHier } {
 # Ryloth direct read ports (2026-10-20): HBM path of a direct read port. A register slice and an AXI4-to-AXI3
 # protocol converter (the HBM ports take at most 16 beats; the converter splits longer bursts), no RAMA. The HBM AXI
 # port runs on ACLK; with hclk_conv = 1 (DRD_HCLK) a clock converter to HCLK is kept in front of the converter.
-proc create_hier_cell_path_drd { parentCell nameHier hclk_conv } {
+proc create_hier_cell_path_drd { parentCell nameHier hclk_conv {slice_mode 10} } {
   set parentObj [get_bd_cells $parentCell]
   set oldCurInst [current_bd_instance .]
   current_bd_instance $parentObj
@@ -106,7 +106,7 @@ proc create_hier_cell_path_drd { parentCell nameHier hclk_conv } {
   create_bd_pin -dir I -type clk hclk
 
   set slice_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 slice_0]
-  set_property -dict [ list CONFIG.REG_AR {10} CONFIG.REG_R {10} CONFIG.REG_AW {0} CONFIG.REG_W {0} CONFIG.REG_B {0} ] $slice_0
+  set_property -dict [ list CONFIG.REG_AR $slice_mode CONFIG.REG_R $slice_mode CONFIG.REG_AW {0} CONFIG.REG_W {0} CONFIG.REG_B {0} ] $slice_0
   set prot_0 [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_protocol_converter:2.1 prot_0]
   set_property -dict [ list CONFIG.SI_PROTOCOL {AXI4} CONFIG.MI_PROTOCOL {AXI3} CONFIG.TRANSLATION_MODE {2} ] $prot_0
 
@@ -616,6 +616,14 @@ proc cr_bd_design_hbm { parentCell } {
  eval $cmd
  #set_property -dict [list CONFIG.CLKOUT1_REQUESTED_OUT_FREQ {250.000} CONFIG.USE_LOCKED {false} CONFIG.USE_RESET {false}] [get_bd_cells clk_wiz_0] 
  set_property -dict [list CONFIG.USE_RESET {true} CONFIG.RESET_TYPE {ACTIVE_LOW} CONFIG.RESET_PORT {resetn}] [get_bd_cells clk_wiz_0]
+ # Ryloth scaling step B: with drd_wide the Coyote ports (shell DMA, card streams) keep 225 MHz on a second output; only
+ # the direct ports need HCLK = 2 x ACLK, and the card path's RAMA missed 300 MHz (drd14w, 10/23)
+ set card_clk_225 [expr {[info exists cnfg(drd_wide)] && $cnfg(drd_wide) eq 1 && [info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0}]
+ if {$card_clk_225} {
+    set_property -dict [list CONFIG.CLKOUT2_USED {true} CONFIG.CLKOUT2_REQUESTED_OUT_FREQ {225.000}] [get_bd_cells clk_wiz_0]
+    set hbm_reset_sync_card [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 hbm_reset_sync_card ]
+    set_property -dict [ list CONFIG.C_AUX_RESET_HIGH {1} ] $hbm_reset_sync_card
+ }
 
   connect_bd_net [get_bd_ports hclk] [get_bd_pins clk_wiz_0/clk_in1]
  #connect_bd_net [get_bd_ports get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins clk_wiz_0/resetn]
@@ -677,7 +685,8 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
  for {set i 0}  {$i < 2 * $cnfg(n_mem_chan)} {incr i} {  
     set path_on_hclk 0
     if {$drd_n > 0 && [expr {$i % $cnfg(n_mem_chan)}] >= $drd_first} {
-       create_hier_cell_path_drd [current_bd_instance .] path_$i [expr {$drd_wide eq 1 ? 0 : $drd_hclk}]
+       # wide (HCLK 300): a fully registered slice (mode 1); mode 10 (SLR crossing) missed 300 MHz inside SLR0 (drd14w, 10/23)
+       create_hier_cell_path_drd [current_bd_instance .] path_$i [expr {$drd_wide eq 1 ? 0 : $drd_hclk}] [expr {$drd_wide eq 1 ? 1 : 10}]
        connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins path_$i/aresetn]
        if {$drd_wide eq 1} { set path_on_hclk 1 }
     } else {
@@ -689,8 +698,13 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
     } else {
        connect_bd_net [get_bd_ports aclk] [get_bd_pins path_$i/aclk]
     }
-    connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/hclk]
-    connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins path_$i/hresetn]
+    if {$card_clk_225 && [expr {$i % $cnfg(n_mem_chan)}] < $drd_first} {
+       connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] [get_bd_pins path_$i/hclk]
+       connect_bd_net [get_bd_pins hbm_reset_sync_card/interconnect_aresetn] [get_bd_pins path_$i/hresetn]
+    } else {
+       connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/hclk]
+       connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins path_$i/hresetn]
+    }
  }
 
 if {$cnfg(fdev) eq "u55c"} {
@@ -752,12 +766,19 @@ if {$cnfg(fdev) eq "u55c"} {
  # AXI port clocks: HCLK, except direct read ports on ACLK (Ryloth; PG276: port clocks may be asynchronous)
  set hclk_pins [list [get_bd_pins hbm_reset_sync_SLR0/slowest_sync_clk]]
  set aclk_pins {}
+ set card_pins {}
+ if {$card_clk_225} { lappend card_pins [get_bd_pins hbm_reset_sync_card/slowest_sync_clk] }
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ACLK" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } else { lappend hclk_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } elseif {$card_clk_225 && $p < $drd_first} { lappend card_pins $pin } else { lappend hclk_pins $pin }
  }
  connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] {*}$hclk_pins
+ if {[llength $card_pins] > 0} {
+    connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] {*}$card_pins
+    connect_bd_net [get_bd_pins hresetn] [get_bd_pins hbm_reset_sync_card/ext_reset_in]
+    connect_bd_net [get_bd_ports DRAM_STAT_CATTRIP] [get_bd_pins hbm_reset_sync_card/aux_reset_in]
+ }
  if {[llength $aclk_pins] > 0} {
     connect_bd_net [get_bd_ports aclk] {*}$aclk_pins
  }
@@ -772,12 +793,14 @@ if {$cnfg(fdev) eq "u55c"} {
  # AXI port resets: direct read ports on ACLK use a reset synchronized to ACLK (same sources as the HCLK one)
  set hrst_pins {}
  set arst_pins {}
+ set crst_pins {}
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ARESET_N" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } else { lappend hrst_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } elseif {$card_clk_225 && $p < $drd_first} { lappend crst_pins $pin } else { lappend hrst_pins $pin }
  }
  connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] {*}$hrst_pins
+ if {[llength $crst_pins] > 0} { connect_bd_net [get_bd_pins hbm_reset_sync_card/interconnect_aresetn] {*}$crst_pins }
  if {[llength $arst_pins] > 0} {
     set hbm_reset_sync_drd [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 hbm_reset_sync_drd ]
     set_property -dict [ list CONFIG.C_AUX_RESET_HIGH {1} ] $hbm_reset_sync_drd
