@@ -24,6 +24,20 @@
  * per-port demux routes dest 1 to the centroid lane, dest 0 to the score unit); a zero-length command with cmd_last
  * produces one null beat (m_tkeep 0, m_tlast 1, m_tdest) behind all earlier data, so a consumer that received no
  * data still sees the end of its query.
+ *
+ * 2026-10-23 (enns15w3 timing, anns15w review):
+ *   - IN_REG = 1 registers the port on both channels, so no path runs from the shell's side of the port (the
+ *     gearbox's LUTRAM FIFO outputs, the decoupler) into this reader's state or its BRAM inputs, and none from the
+ *     FIFO count back into the gearbox's read enable. enns15w3 placed readers one SLR away from their gearboxes and
+ *     missed 150 MHz by 1.5 ns on exactly those paths (enns15w, readers next to the gearboxes: -0.49 ns).
+ *     R: data and rlast registered every cycle without an enable, valid = the registered handshake, rready = 1
+ *     (rule 2: every beat requested has a reserved slot, so the FIFO cannot be full when one arrives). AR: a 2-entry
+ *     skid whose input ready is local state. Bursts in the skid count as in flight (n_out, credits), so max_out
+ *     still bounds what the memory side sees. IN_REG = 0 is the original port.
+ *   - the null beat now reserves its FIFO slot (credits - 1 on null_push). Before, its pop returned a credit nobody
+ *     had taken, so every null beat (anns15d/w: one per port per query) raised credits by one: after a few queries
+ *     the reader could reserve more beats than the FIFO holds (breaking rule 2), and the counter wrapped after
+ *     FIFO_BEATS null beats (256 queries on anns15w, 512 on anns15d), leaving the port unable to issue (a hang).
  */
 
 `timescale 1ns / 1ps
@@ -34,7 +48,8 @@ module drd_reader #(
     parameter integer MAX_OUT     = 32,
     parameter integer BURST_BEATS = 16,
     parameter integer FIFO_BEATS  = 512,
-    parameter integer DEFAULT_OUT = 8      // bursts in flight when max_out = 0 (16 for the wide ports at HCLK = 2 x ACLK)
+    parameter integer DEFAULT_OUT = 8,     // bursts in flight when max_out = 0 (16 for the wide ports at HCLK = 2 x ACLK)
+    parameter integer IN_REG      = 0      // 1: registered port (both channels), see the header
 ) (
     input  logic                    aclk,
     input  logic                    aresetn,
@@ -88,17 +103,64 @@ logic [CR_BITS-1:0]     credits;         // output FIFO beats not yet reserved b
 wire [BB_BITS:0]  to_boundary = BURST_BEATS - gen_beat[BB_BITS-1:0];
 wire [BB_BITS:0]  this_beats  = (gen_left < to_boundary) ? gen_left[BB_BITS:0] : to_boundary;
 wire              final_burst = (gen_left == this_beats);
-wire              ar_fire     = m_axi.arvalid && m_axi.arready;
-wire              r_fire      = m_axi.rvalid && m_axi.rready;
-wire              r_end       = r_fire && m_axi.rlast;
+wire              ar_gen_valid;  // the generator has a burst to issue (defined below)
+wire              ar_gen_ready;  // the port (or its skid) takes it
+wire              ar_fire     = ar_gen_valid && ar_gen_ready;
+wire              r_in_valid;    // a beat arrives at the reader's FIFO (after the port register when IN_REG)
+wire              r_in_last;
+wire [DATA_BITS-1:0] r_in_data;
+wire              r_end       = r_in_valid && r_in_last;
 
 // Issue condition: a full burst's worth of credits must be free (BURST_BEATS >= this_beats), so arvalid depends only
 // on registered state and not on this_beats (gen_beat -> to_boundary -> 26-bit compare -> mux -> credit compare was
 // the reader's critical path at 200 MHz, 10/21: 9 logic levels into the CE of every gen_* register). The reservation
 // itself still charges the exact this_beats; a short final burst merely waits until 16 slots are free.
-assign m_axi.arvalid = gen_active && (n_out < max_out_eff) && (credits >= CR_BITS'(BURST_BEATS));
-assign m_axi.araddr  = {{(64-ADDR_BITS){1'b0}}, gen_beat, {BS{1'b0}}};
-assign m_axi.arlen   = 8'(this_beats - 1);
+assign ar_gen_valid = gen_active && (n_out < max_out_eff) && (credits >= CR_BITS'(BURST_BEATS));
+
+if (IN_REG) begin : g_port_reg
+    // AR: 2-entry skid; slot 0 drives the port, slot 1 catches a burst while slot 0 waits; input ready = !slot 1
+    logic                    ar_v0, ar_v1;
+    logic [ADDR_BITS-BS-1:0] ar_b0, ar_b1;
+    logic [7:0]              ar_l0, ar_l1;
+    wire                     ar_take = !ar_v0 || m_axi.arready;   // slot 0 is free or leaves this cycle
+    assign ar_gen_ready = !ar_v1;
+    always_ff @(posedge aclk) begin
+        if (!aresetn) begin ar_v0 <= 1'b0; ar_v1 <= 1'b0; end
+        else if (ar_take) begin
+            if (ar_v1) begin ar_v0 <= 1'b1; ar_v1 <= 1'b0; end
+            else         ar_v0 <= ar_fire;
+        end
+        else if (ar_fire) ar_v1 <= 1'b1;
+    end
+    always_ff @(posedge aclk) begin
+        if (ar_take) begin
+            ar_b0 <= ar_v1 ? ar_b1 : gen_beat;
+            ar_l0 <= ar_v1 ? ar_l1 : 8'(this_beats - 1);
+        end
+        if (!ar_take && ar_fire) begin ar_b1 <= gen_beat; ar_l1 <= 8'(this_beats - 1); end
+    end
+    assign m_axi.arvalid = ar_v0;
+    assign m_axi.araddr  = {{(64-ADDR_BITS){1'b0}}, ar_b0, {BS{1'b0}}};
+    assign m_axi.arlen   = ar_l0;
+    // R: registered every cycle (data without an enable); always ready
+    logic                    rq_vld, rq_last;
+    logic [DATA_BITS-1:0]    rq_data;
+    always_ff @(posedge aclk) begin rq_data <= m_axi.rdata; rq_last <= m_axi.rlast; end
+    always_ff @(posedge aclk) rq_vld <= aresetn && m_axi.rvalid;
+    assign m_axi.rready = 1'b1;
+    assign r_in_valid = rq_vld;
+    assign r_in_last  = rq_last;
+    assign r_in_data  = rq_data;
+end
+else begin : g_port_direct
+    assign ar_gen_ready  = m_axi.arready;
+    assign m_axi.arvalid = ar_gen_valid;
+    assign m_axi.araddr  = {{(64-ADDR_BITS){1'b0}}, gen_beat, {BS{1'b0}}};
+    assign m_axi.arlen   = 8'(this_beats - 1);
+    assign r_in_valid = m_axi.rvalid && m_axi.rready;
+    assign r_in_last  = m_axi.rlast;
+    assign r_in_data  = m_axi.rdata;
+end
 assign m_axi.arburst = 2'b01;
 assign m_axi.arcache = 4'b0011;
 assign m_axi.arid    = 0;
@@ -138,7 +200,7 @@ always_ff @(posedge aclk) begin
             if (final_burst) gen_active <= 1'b0;
         end
         n_out   <= n_out + (ar_fire ? 1 : 0) - (r_end ? 1 : 0);
-        credits <= credits - (ar_fire ? CR_BITS'(this_beats) : '0) + (pop ? 1 : 0);
+        credits <= credits - (ar_fire ? CR_BITS'(this_beats) : '0) - (null_push ? 1 : 0) + (pop ? 1 : 0);
         if (null_push) null_pending <= 1'b0;
     end
 end
@@ -173,17 +235,19 @@ logic [DATA_BITS+2:0]   out_data;
 
 wire full  = (count == FIFO_BEATS);
 wire empty = (count == 0);
-wire r_push = m_axi.rvalid && m_axi.rready;
-// the null beat takes a slot once every earlier burst has returned and no data is arriving this cycle
-assign null_push = null_pending && (n_out == 0) && !r_push && !full;
+wire r_push = r_in_valid;
+// the null beat takes (and reserves) a slot once every earlier burst has returned and no data is arriving this cycle
+assign null_push = null_pending && (n_out == 0) && !r_push && !full && (credits != 0);
 wire push  = r_push || null_push;
 wire rd    = !empty && (!out_valid || m_tready);
 assign pop = m_tvalid && m_tready;
 
-assign m_axi.rready = !full;
+if (!IN_REG) begin : g_rready
+    assign m_axi.rready = !full;
+end
 
 always_ff @(posedge aclk) begin
-    if (push) mem[wp_f] <= r_push ? {1'b0, destq[rp], m_axi.rlast && lastq[rp], m_axi.rdata}
+    if (push) mem[wp_f] <= r_push ? {1'b0, destq[rp], r_in_last && lastq[rp], r_in_data}
                                   : {1'b1, null_dest, 1'b1, {DATA_BITS{1'b0}}};
     if (rd)   out_data  <= mem[rp_f];
 end
@@ -208,6 +272,13 @@ assign m_tdest     = out_data[DATA_BITS+1];
 assign m_tkeep_all = !out_data[DATA_BITS+2];
 
 assign busy = gen_active || null_pending || (n_out != 0) || !empty || out_valid;
+
+// synthesis translate_off
+// at rest every FIFO slot is free again; a leak here (the 10/23 null-beat bug) drifts by one per null beat
+always @(posedge aclk) if (aresetn && !busy && !(cmd_valid && cmd_ready) && credits != CR_BITS'(FIFO_BEATS))
+    $error("drd_reader %m: idle with credits %0d != FIFO_BEATS %0d", credits, FIFO_BEATS);
+always @(posedge aclk) if (aresetn && r_push && full) $error("drd_reader %m: beat arrived with the FIFO full");
+// synthesis translate_on
 
 // ---------------------------------------------------------------- no write half
 assign m_axi.awaddr   = 0;
