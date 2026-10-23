@@ -63,7 +63,8 @@ end
 endmodule
 
 module axi_rd_reg #(
-    parameter integer ADDR_BITS = 34
+    parameter integer ADDR_BITS = 34,
+    parameter integer DATA_BITS = AXI_DATA_BITS
 ) (
     input  logic            aclk,
     input  logic            aresetn,
@@ -72,7 +73,7 @@ module axi_rd_reg #(
 );
 
 localparam integer AR_BITS = ADDR_BITS + 8;
-localparam integer R_BITS  = AXI_DATA_BITS + 3;
+localparam integer R_BITS  = DATA_BITS + 3;
 
 logic [AR_BITS-1:0] ar_s, ar_m;
 logic [R_BITS-1:0]  r_s, r_m;
@@ -102,7 +103,7 @@ assign m_axi.arlock   = 1'b0;
 assign m_axi.arprot   = 3'b010;
 assign m_axi.arqos    = 4'b0;
 assign m_axi.arregion = 4'b0;
-assign m_axi.arsize   = 3'b110;
+assign m_axi.arsize   = 3'($clog2(DATA_BITS/8));
 
 assign s_axi.rdata = r_m[R_BITS-1:3];
 assign s_axi.rresp = r_m[2:1];
@@ -136,7 +137,8 @@ endmodule
 
 module axi_rd_reg_array #(
     parameter integer N_STAGES = 2,
-    parameter integer ADDR_BITS = 34
+    parameter integer ADDR_BITS = 34,
+    parameter integer DATA_BITS = AXI_DATA_BITS
 ) (
     input  logic            aclk,
     input  logic            aresetn,
@@ -148,11 +150,11 @@ if (N_STAGES == 0) begin
     `AXI_ASSIGN(s_axi, m_axi)
 end
 else begin
-    AXI4 axi_s [N_STAGES+1] ();
+    AXI4 #(.AXI4_DATA_BITS(DATA_BITS)) axi_s [N_STAGES+1] ();
     `AXI_ASSIGN(s_axi, axi_s[0])
     `AXI_ASSIGN(axi_s[N_STAGES], m_axi)
     for (genvar i = 0; i < N_STAGES; i++) begin
-        axi_rd_reg #(.ADDR_BITS(ADDR_BITS)) inst_reg (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_s[i]), .m_axi(axi_s[i+1]));
+        axi_rd_reg #(.ADDR_BITS(ADDR_BITS), .DATA_BITS(DATA_BITS)) inst_reg (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_s[i]), .m_axi(axi_s[i+1]));
     end
 end
 

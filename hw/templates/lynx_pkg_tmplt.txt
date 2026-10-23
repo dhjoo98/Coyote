@@ -214,8 +214,13 @@ package lynxTypes;
     localparam integer N_REG_DYN_HOST_S1 = {{ cnfg.nr_dh_s1 }}; // 3
     localparam integer N_REG_DYN_CARD_S0 = {{ cnfg.nr_dc_s0 }}; // 4
     localparam integer N_REG_DYN_CARD_S1 = {{ cnfg.nr_dc_s1 }}; // 3
+{% if cnfg.drd_wide %}
+    localparam integer N_REG_DYN_DRD_S0 = 3; // direct read ports, memory side (HCLK, 512 bits; crosses SLR0 -> SLR1)
+    localparam integer N_REG_DYN_DRD_S1 = 2; // direct read ports, user side of the crossing (HCLK, 512 bits)
+{% else %}
     localparam integer N_REG_DYN_DRD_S0 = 2; // direct read ports, memory side
     localparam integer N_REG_DYN_DRD_S1 = 2; // direct read ports, user side
+{% endif %}
     localparam integer N_REG_DYN_NET_S0 = {{ cnfg.nr_dn_s0 }}; // 4
     localparam integer N_REG_DYN_NET_S1 = {{ cnfg.nr_dn_s1 }}; // 3
     localparam integer N_REG_NET_S0 = {{ cnfg.nr_n_s0 }}; // 4
@@ -387,6 +392,8 @@ package lynxTypes;
     localparam integer N_CARD_AXI = {{ cnfg.n_card_axi }};
     localparam integer N_DIRECT_RD = {{ cnfg.n_direct_rd }}; // Ryloth direct read ports (read-only AXI to the HBM)
     localparam integer DRD_ADDR_BITS = 34; // card physical address of a direct read (16 GiB)
+    localparam integer DRD_WIDE = {{ cnfg.drd_wide }}; // 1: direct ports are 1024 bits at ACLK (512 bits at HCLK = 2 x ACLK behind a gearbox)
+    localparam integer DRD_DATA_BITS = DRD_WIDE ? 1024 : 512; // data width of axi_drd at the vFPGA boundary
     localparam integer N_STRM_AXI = {{ cnfg.n_strm_axi }};
     localparam integer N_RDMA_AXI = {{ cnfg.n_rdma_axi }};
 

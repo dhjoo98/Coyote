@@ -364,6 +364,7 @@ module shell_top (
     logic uclk;
     logic uresetn;
     logic hclk;
+    logic hclk_int;      // HBM AXI clock generated in design_hbm (HCLK_F); the wide direct ports' gearboxes use it
     logic hresetn;
     logic lckresetn;
     
@@ -1251,7 +1252,7 @@ module shell_top (
         .axi_hbm_in_{{ i }}_wstrb(axi_ddr_in[{{ i }}].wstrb),
         .axi_hbm_in_{{ i }}_wvalid(axi_ddr_in[{{ i }}].wvalid),
     {% endfor %}
-        .hclk_int(),
+        .hclk_int(hclk_int),
         .hclk(hclk),
         .hresetn(hresetn),
         .dclk(dclk),
@@ -1348,6 +1349,9 @@ module shell_top (
         .S_BSCAN_capture(m_bscan_capture),
         .S_BSCAN_bscanid_en(m_bscan_bscanid_en),
         .dclk(dclk),
+{% if cnfg.en_mem and cnfg.n_direct_rd > 0 and cnfg.drd_wide %}
+        .hclk_drd(hclk_int),
+{% endif %}
         .aresetn(aresetn),
         .aclk(aclk),
         .uresetn(uresetn),

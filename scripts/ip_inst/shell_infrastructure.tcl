@@ -15,6 +15,12 @@ set_property -dict [list CONFIG.C_EXT_RESET_HIGH {1}] [get_ips proc_sys_reset_u]
 # HBM
 create_ip -name axis_data_fifo -vendor xilinx.com -library ip -version 2.0 -module_name axis_data_fifo_hbm_r
 set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.TUSER_WIDTH {4} CONFIG.FIFO_DEPTH {128} CONFIG.HAS_TLAST {1} ] [get_ips axis_data_fifo_hbm_r]
+# Ryloth scaling step B: at HCLK = 2 x ACLK a wide direct port needs 16 bursts of 1 KiB in flight to cover the read
+# latency; the per-stack merge FIFO must hold them all (16 x 16 beats) so an HBM port is never stalled (10/20 deadlock
+# rule). Only 256 of the 512 data bits are used, so 256 entries take the same block RAMs as 128.
+if {[info exists cfg(drd_wide)] && $cfg(drd_wide) eq 1} {
+    set_property -dict [list CONFIG.FIFO_DEPTH {256}] [get_ips axis_data_fifo_hbm_r]
+}
 
 create_ip -name axis_data_fifo -vendor xilinx.com -library ip -version 2.0 -module_name axis_data_fifo_hbm_w
 set_property -dict [list CONFIG.TDATA_NUM_BYTES {64} CONFIG.FIFO_DEPTH {128} CONFIG.HAS_TSTRB {1} CONFIG.HAS_TLAST {1} ] [get_ips axis_data_fifo_hbm_w]

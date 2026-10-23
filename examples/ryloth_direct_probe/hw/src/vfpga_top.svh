@@ -23,6 +23,10 @@
  * N_DIRECT is read back at register 18.
  * v4: register 19 MAX_OUT limits the bursts in flight per direct port (0 = 8); the readers keep an output FIFO with
  * credits so the shell's read return is never back-pressured (deadlock seen on the board 10/20, step 5).
+ * v5 (scaling step B, 10/22 night): with DRD_WIDE the direct ports are 1024 bits (128-byte beats, 1 KiB bursts of 8
+ * beats). BEATS and N_BEATS stay in 64-byte units for every stream (a 128-byte beat counts 2), and the checksum lanes
+ * fold word j and word j+8 of a 128-byte beat into lane j, which equals the per-64-byte-block lane sums the host
+ * already computes. The host program is unchanged.
  */
 
 localparam integer NC = N_CARD_AXI;
@@ -80,7 +84,10 @@ logic                   seen_first;
 logic [63:0]            vaddr_tab [NS];     // per-stream region base, written through SEL + VADDR
 assign csr_sel = csr_sel_raw[SEL_BITS-1:0];
 logic [NS-1:0]          beat_fire;
-logic [511:0]           beat_data [NS];
+localparam integer DW = (DRD_DATA_BITS > 512) ? DRD_DATA_BITS : 512;   // widest stream
+localparam integer DRD_UNITS = DRD_DATA_BITS / 512;                     // 64-byte units per direct-port beat
+logic [DW-1:0]          beat_data [NS];
+logic [1:0]             beat_units [NS];
 logic [ND > 0 ? ND-1 : 0:0] drd_fire;     // a direct stream's command accepted this cycle
 
 wire start = ctrl[0] && !running;
@@ -150,9 +157,9 @@ always_ff @(posedge aclk) begin
             if (|beat_fire && !seen_first) begin seen_first <= 1'b1; st_t_first <= st_timer; end
             for (int i = 0; i < NS; i++) begin
                 if (beat_fire[i]) begin
-                    beats[i]  <= beats[i] + 1;
+                    beats[i]  <= beats[i] + beat_units[i];
                     t_last[i] <= st_timer;
-                    if (beats[i] == csr_n_beats - 1) data_done[i] <= 1'b1;
+                    if (beats[i] + beat_units[i] >= csr_n_beats) data_done[i] <= 1'b1;
                 end
             end
 
@@ -166,16 +173,18 @@ end
 for (genvar i = 0; i < NC; i++) begin : gen_card_recv
     assign axis_card_recv[i].tready = 1'b1;
     assign beat_fire[i] = axis_card_recv[i].tvalid && axis_card_recv[i].tready;
-    assign beat_data[i] = axis_card_recv[i].tdata;
+    assign beat_data[i] = DW'(axis_card_recv[i].tdata);
+    assign beat_units[i] = 2'd1;
 end
 
 // direct read ports: a drd_reader per port, data drained at line rate
 for (genvar k = 0; k < ND; k++) begin : gen_drd
     logic cmd_valid, cmd_ready, tvalid, tlast, busy;
-    logic [511:0] tdata;
+    logic [DRD_DATA_BITS-1:0] tdata;
     assign cmd_valid = running && active[NC+k] && !req_done[NC+k];
     assign drd_fire[k] = cmd_valid && cmd_ready;
-    drd_reader #(.ADDR_BITS(DRD_ADDR_BITS), .MAX_OUT(32), .BURST_BEATS(16), .FIFO_BEATS(512)) inst_drd (
+    drd_reader #(.ADDR_BITS(DRD_ADDR_BITS), .DATA_BITS(DRD_DATA_BITS), .MAX_OUT(32), .BURST_BEATS(16 / DRD_UNITS),
+                 .FIFO_BEATS(512 / DRD_UNITS), .DEFAULT_OUT(8 * DRD_UNITS)) inst_drd (
         .aclk(aclk), .aresetn(aresetn), .max_out(csr_max_out),
         .cmd_valid(cmd_valid), .cmd_ready(cmd_ready), .cmd_addr(cur_vaddr[NC+k][DRD_ADDR_BITS-1:0]), .cmd_len(csr_len),
         .cmd_last(issued[NC+k] == csr_n_reps - 1),
@@ -183,7 +192,8 @@ for (genvar k = 0; k < ND; k++) begin : gen_drd
         .m_tdata(tdata), .m_tvalid(tvalid), .m_tlast(tlast), .m_tready(1'b1), .busy(busy)
     );
     assign beat_fire[NC+k] = tvalid;
-    assign beat_data[NC+k] = tdata;
+    assign beat_data[NC+k] = DW'(tdata);
+    assign beat_units[NC+k] = 2'(DRD_UNITS);
 end
 if (ND == 0) begin : gen_no_drd
     assign drd_fire = '0;
@@ -197,7 +207,12 @@ for (genvar i = 0; i < NS; i++) begin : g_csum
     always_ff @(posedge aclk) begin
         if (!aresetn || start) acc <= '0;
         else if (beat_fire[i]) begin
-            for (int j = 0; j < 8; j++) acc[j] <= acc[j] + beat_data[i][64*j +: 64];
+            for (int j = 0; j < 8; j++) begin
+                logic [63:0] s;
+                s = beat_data[i][64*j +: 64];
+                for (int u = 1; u < DW / 512; u++) s = s + beat_data[i][512*u + 64*j +: 64];   // zero for 512-bit streams
+                acc[j] <= acc[j] + s;
+            end
         end
     end
     assign csum_mux[i] = acc[csr_lane];

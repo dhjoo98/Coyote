@@ -132,6 +132,9 @@ module design_dynamic_top #(
     input  logic                                dclk,
 
     // Clock and reset
+{% if cnfg.n_direct_rd > 0 and cnfg.drd_wide %}
+    input  logic                                hclk_drd,      // HBM AXI clock (2 x ACLK) of the wide direct ports
+{% endif %}
     input  logic                                aresetn,
     input  logic                                aclk,
     input  logic                                uresetn,
@@ -342,6 +345,25 @@ module design_dynamic_top #(
     // Ryloth direct read ports (2026-10-20): user region -> PR decoupler -> read-only register stages ->
     // m_axi_ddr[1+N_CARD_AXI+k]. No card DMA engine, credits, stream register arrays, MMU or write half.
     // ----------------------------------------------------------------------
+{% if cnfg.drd_wide %}
+    // Scaling step B (2026-10-22 night): the user side is 1024 bits at ACLK; a gearbox per port turns it into 512 bits
+    // at HCLK = 2 x ACLK right after the decoupler (SLR1), so the register stages and the SLR0 crossing carry 512 bits
+    // at HCLK (the same wires as before, twice the rate) and the HBM ports run at HCLK.
+    AXI4 #(.AXI4_DATA_BITS(DRD_DATA_BITS)) axi_drd_ul [N_DIRECT_RD] ();
+    AXI4 #(.AXI4_DATA_BITS(DRD_DATA_BITS)) axi_drd_dc [N_DIRECT_RD] ();
+    AXI4 axi_drd_s1 [N_DIRECT_RD] ();
+    AXI4 axi_drd_s2 [N_DIRECT_RD] ();
+
+    for(genvar k = 0; k < N_DIRECT_RD; k++) begin
+        logic hresetn_drd;   // ACLK reset synchronized to HCLK, one per port next to its loads
+        xpm_cdc_async_rst #(.DEST_SYNC_FF(4), .INIT_SYNC_FF(0), .RST_ACTIVE_HIGH(0)) inst_drd_hrst (
+            .src_arst(aresetn), .dest_clk(hclk_drd), .dest_arst(hresetn_drd));
+        axi_rd_decoupler #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_dcpl (.aclk(aclk), .aresetn(aresetn), .decouple(decouple_uclk[0]), .s_axi(axi_drd_ul[k]), .m_axi(axi_drd_dc[k]));
+        drd_gearbox #(.ADDR_BITS(DRD_ADDR_BITS)) inst_drd_gbx (.aclk(aclk), .aresetn(aresetn), .hclk(hclk_drd), .hresetn(hresetn_drd), .s_axi(axi_drd_dc[k]), .m_axi(axi_drd_s1[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s1 (.aclk(hclk_drd), .aresetn(hresetn_drd), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
+        axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s0 (.aclk(hclk_drd), .aresetn(hresetn_drd), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
+    end
+{% else %}
     AXI4 axi_drd_ul [N_DIRECT_RD] ();
     AXI4 axi_drd_s1 [N_DIRECT_RD] ();
     AXI4 axi_drd_s2 [N_DIRECT_RD] ();
@@ -351,6 +373,7 @@ module design_dynamic_top #(
         axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S1), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s1 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s1[k]), .m_axi(axi_drd_s2[k]));
         axi_rd_reg_array #(.N_STAGES(N_REG_DYN_DRD_S0), .ADDR_BITS(DRD_ADDR_BITS)) inst_drd_reg_s0 (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_s2[k]), .m_axi(m_axi_ddr[1+N_REGIONS*N_CARD_AXI+k]));
     end
+{% endif %}
 
 {% endif %}
 

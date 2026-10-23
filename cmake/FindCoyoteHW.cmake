@@ -102,6 +102,9 @@ set(HBM_DIRECT 0 CACHE STRING "Direct HBM: no RAMA striping, one pseudo-channel 
 # stream register arrays, write half, clock converter and RAMA of a Coyote card stream. Placed after the card streams.
 set(N_DIRECT_RD 0 CACHE STRING "Direct read ports (needs HBM_SPLIT=1, HBM_DIRECT=1, N_REGIONS=1)")
 set(DRD_HCLK 0 CACHE STRING "Direct read ports keep a clock converter to HCLK (fallback)")
+# Ryloth scaling step B (2026-10-22): 1024-bit direct ports at ACLK; a gearbox in the dynamic layer turns each into
+# 512 bits at HCLK (2 x ACLK), so the HBM side runs twice as fast as the user side and the port moves twice the bytes.
+set(DRD_WIDE 0 CACHE STRING "Direct read ports are 1024 bits at ACLK, 512 bits at HCLK behind a gearbox (needs HCLK_F = 2 x ACLK_F)")
 
 set(DATA_DEST_BITS 4 CACHE STRING "Number of bits used to address the coyote stream index.")
 set(VADDR_BITS 48 CACHE STRING "Bits of a virtual address used e.g. in the MMU.")
@@ -526,6 +529,12 @@ macro(validation_checks_hw)
             endif()
             if(N_MEM_CHAN GREATER 16)
                 message(FATAL_ERROR "${N_MEM_CHAN} memory ports (network + 1 + N_CARD_AXI + N_DIRECT_RD); at most 16 with HBM_SPLIT=1.")
+            endif()
+            if(DRD_WIDE)
+                MATH(EXPR DRD_HCLK_NEEDED "2 * ${ACLK_F}")
+                if(DRD_HCLK OR NOT HCLK_F EQUAL DRD_HCLK_NEEDED)
+                    message(FATAL_ERROR "DRD_WIDE needs DRD_HCLK=0 and HCLK_F = 2 x ACLK_F (${DRD_HCLK_NEEDED}).")
+                endif()
             endif()
         endif()
 

@@ -361,17 +361,22 @@ proc cr_bd_design_hbm { parentCell } {
       eval $cmd
    }
 
+  # Ryloth scaling step B (2026-10-22 night): with drd_wide the direct ports' interfaces are on HCLK (the dynamic layer's
+  # gearboxes drive them at HCLK), so they are associated with hclk_int instead of aclk.
+  set drd_wide_bd 0
+  if {[info exists cnfg(drd_wide)] && $cnfg(drd_wide) eq 1 && [info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0} { set drd_wide_bd 1 }
+  set drd_first_bd $cnfg(n_mem_chan)
+  if {$drd_wide_bd} { set drd_first_bd [expr {$cnfg(n_mem_chan) - $cnfg(n_direct_rd)}] }
+  set hclk_busif {}
+  for {set i 0}  {$i < 2 * (16 - $cnfg(n_mem_chan))} {incr i} { lappend hclk_busif "axi_toff_in_$i" }
+  for {set i $drd_first_bd} {$i < $cnfg(n_mem_chan)} {incr i} { lappend hclk_busif "axi_hbm_in_$i" }
+
   # Internal
   set cmd "set hclk_int \[ create_bd_port -dir O -type clk hclk_int ]
    set_property -dict \[ list \
    CONFIG.FREQ_HZ {$cnfg(hclk_f)000000} \
    CONFIG.ASSOCIATED_BUSIF {" 
-   for {set i 0}  {$i < 2 * (16 - $cnfg(n_mem_chan))} {incr i} {
-      append cmd "axi_toff_in_$i"
-      if {$i != 2 * (16 - $cnfg(n_mem_chan)) - 1} {
-         append cmd ":"
-      }
-   }
+   append cmd [join $hclk_busif ":"]
    append cmd "} \
    ] \$hclk_int"
   eval $cmd
@@ -394,12 +399,9 @@ proc cr_bd_design_hbm { parentCell } {
   set cmd "set aclk \[ create_bd_port -dir I -type clk aclk ]
         set_property -dict \[ list \
             CONFIG.ASSOCIATED_BUSIF {" 
-            for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
-               append cmd "axi_hbm_in_$i"
-               if {$i != $cnfg(n_mem_chan) - 1} {
-                  append cmd ":"
-               }
-            }
+            set aclk_busif {}
+            for {set i 0}  {$i < $drd_first_bd} {incr i} { lappend aclk_busif "axi_hbm_in_$i" }
+            append cmd [join $aclk_busif ":"]
             append cmd "} \
             CONFIG.ASSOCIATED_RESET {aresetn} \
             CONFIG.FREQ_HZ {$cnfg(aclk_f)000000} \
@@ -459,7 +461,7 @@ proc cr_bd_design_hbm { parentCell } {
   # ports on ACLK, take it from the shell port (slot 0 / 16), which keeps its clock converter at HCLK.
   set clk_sel0 "AXI_15_ACLK"
   set clk_sel1 "AXI_31_ACLK"
-  if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && !([info exists cnfg(drd_hclk)] && $cnfg(drd_hclk) eq 1)} {
+  if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && !([info exists cnfg(drd_hclk)] && $cnfg(drd_hclk) eq 1) && !([info exists cnfg(drd_wide)] && $cnfg(drd_wide) eq 1)} {
      set clk_sel0 "AXI_00_ACLK"
      set clk_sel1 "AXI_16_ACLK"
   }
@@ -634,7 +636,15 @@ if {[info exists cnfg(n_direct_rd)]} { set drd_n $cnfg(n_direct_rd) }
 set drd_hclk 0
 if {[info exists cnfg(drd_hclk)]} { set drd_hclk $cnfg(drd_hclk) }
 set drd_first [expr {$cnfg(n_mem_chan) - $drd_n}]
-if {$drd_n > 0} {
+set drd_wide 0
+if {[info exists cnfg(drd_wide)] && $drd_n > 0} { set drd_wide $cnfg(drd_wide) }
+if {$drd_n > 0 && $drd_wide eq 1} {
+   # Scaling step B: the direct paths (width split, register slice, protocol converter) run on HCLK = 2 x ACLK; their
+   # reset is the fabric's aresetn synchronized to HCLK next to its loads.
+   set drd_fabric_rst [ create_bd_cell -type ip -vlnv xilinx.com:ip:proc_sys_reset:5.0 drd_fabric_rst ]
+   connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins drd_fabric_rst/slowest_sync_clk]
+   connect_bd_net [get_bd_ports aresetn] [get_bd_pins drd_fabric_rst/ext_reset_in]
+} elseif {$drd_n > 0} {
    # Local ACLK reset for the direct paths' fabric (width split, register slice, protocol converter): the shell's
    # global aresetn is one flop with a fan-out above 100k, and at 225 MHz its route into SLR0 missed timing by 0.5 ns
    # (drd14r_225, 10/21). The synchronizer re-times the same reset next to its loads.
@@ -651,7 +661,11 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
    }
    set cmd [format "set_property -dict \[list CONFIG.HBM_CHAN_SIZE {$cnfg(hbm_size)}] \[get_bd_cells hbm_wide_$i]"]
    eval $cmd
-   connect_bd_net [get_bd_ports aclk] [get_bd_pins hbm_wide_$i/aclk]
+   if {$drd_n > 0 && $drd_wide eq 1 && $i >= $drd_first} {
+      connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins hbm_wide_$i/aclk]
+   } else {
+      connect_bd_net [get_bd_ports aclk] [get_bd_pins hbm_wide_$i/aclk]
+   }
    if {$drd_n > 0 && $i >= $drd_first} {
       connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins hbm_wide_$i/aresetn]
    } else {
@@ -661,14 +675,20 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
 
  # Path
  for {set i 0}  {$i < 2 * $cnfg(n_mem_chan)} {incr i} {  
+    set path_on_hclk 0
     if {$drd_n > 0 && [expr {$i % $cnfg(n_mem_chan)}] >= $drd_first} {
-       create_hier_cell_path_drd [current_bd_instance .] path_$i $drd_hclk
+       create_hier_cell_path_drd [current_bd_instance .] path_$i [expr {$drd_wide eq 1 ? 0 : $drd_hclk}]
        connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins path_$i/aresetn]
+       if {$drd_wide eq 1} { set path_on_hclk 1 }
     } else {
        create_hier_cell_path [current_bd_instance .] path_$i
        connect_bd_net [get_bd_ports aresetn] [get_bd_pins path_$i/aresetn]
     }
-    connect_bd_net [get_bd_ports aclk] [get_bd_pins path_$i/aclk]
+    if {$path_on_hclk} {
+       connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/aclk]
+    } else {
+       connect_bd_net [get_bd_ports aclk] [get_bd_pins path_$i/aclk]
+    }
     connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins path_$i/hclk]
     connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins path_$i/hresetn]
  }
@@ -735,7 +755,7 @@ if {$cnfg(fdev) eq "u55c"} {
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ACLK" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } else { lappend hclk_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } else { lappend hclk_pins $pin }
  }
  connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] {*}$hclk_pins
  if {[llength $aclk_pins] > 0} {
@@ -755,7 +775,7 @@ if {$cnfg(fdev) eq "u55c"} {
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ARESET_N" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } else { lappend hrst_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } else { lappend hrst_pins $pin }
  }
  connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] {*}$hrst_pins
  if {[llength $arst_pins] > 0} {
