@@ -228,6 +228,13 @@ module design_user_wrapper_{{ c_reg }} (
 
 {% if cnfg.flow == 'user' %}
 
+    // 10/24 (anns15w4): the shell's reset flip-flop drove this wrapper's credit FIFOs, registers and the user logic directly
+    // (7.2 ns of wire, -0.505 ns at 150 MHz). Everything below sees aresetn two registers later (reset is long; the shell
+    // keeps the region decoupled until the host releases it).
+    (* keep = "true" *) logic [1:0] aresetn_pipe = 2'b00;
+    always_ff @(posedge aclk) aresetn_pipe <= {aresetn_pipe[0], aresetn};
+    wire aresetn_r = aresetn_pipe[1];
+
     // 
     // INTERFACE CONV.
     //
@@ -490,66 +497,66 @@ module design_user_wrapper_{{ c_reg }} (
     //
 
     // AXIL
-    axil_reg inst_reg_ctrl (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ctrl_user), .m_axi(axi_ctrl_user_int));
+    axil_reg inst_reg_ctrl (.aclk(aclk), .aresetn(aresetn_r), .s_axi(axi_ctrl_user), .m_axi(axi_ctrl_user_int));
 
     // Notify
-    meta_reg #(.DATA_BITS($bits(irq_not_t)) inst_reg_not (.aclk(aclk), .aresetn(aresetn), .s_meta(notify_int), .m_meta(notify));
+    meta_reg #(.DATA_BITS($bits(irq_not_t)) inst_reg_not (.aclk(aclk), .aresetn(aresetn_r), .s_meta(notify_int), .m_meta(notify));
 
     // Host request
-    meta_reg #(.DATA_BITS($bits(dreq_t))) inst_reg_host (.aclk(aclk), .aresetn(aresetn), .s_meta(host_sq), .m_meta(host_sq_int));
+    meta_reg #(.DATA_BITS($bits(dreq_t))) inst_reg_host (.aclk(aclk), .aresetn(aresetn_r), .s_meta(host_sq), .m_meta(host_sq_int));
 
     // Bypass
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_bpss_rd (.aclk(aclk), .aresetn(aresetn), .s_meta(bpss_rd_req_int), .m_meta(bpss_rd_req));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_bpss_wr (.aclk(aclk), .aresetn(aresetn), .s_meta(bpss_wr_req_int), .m_meta(bpss_wr_req));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_cq_bpss_rd  (.aclk(aclk), .aresetn(aresetn), .s_meta(bpss_rd_cq), .m_meta(bpss_rd_cq_int));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_cq_bpss_wr  (.aclk(aclk), .aresetn(aresetn), .s_meta(bpss_wr_cq), .m_meta(bpss_wr_cq_int));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_bpss_rd (.aclk(aclk), .aresetn(aresetn_r), .s_meta(bpss_rd_req_int), .m_meta(bpss_rd_req));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_bpss_wr (.aclk(aclk), .aresetn(aresetn_r), .s_meta(bpss_wr_req_int), .m_meta(bpss_wr_req));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_cq_bpss_rd  (.aclk(aclk), .aresetn(aresetn_r), .s_meta(bpss_rd_cq), .m_meta(bpss_rd_cq_int));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_cq_bpss_wr  (.aclk(aclk), .aresetn(aresetn_r), .s_meta(bpss_wr_cq), .m_meta(bpss_wr_cq_int));
 
 {% if cnfg.en_rdma %}
     // RDMA desc
-    meta_reg #(.DATA_BITS($bits(dreq_t)) inst_reg_rdma_sq (.aclk(aclk), .aresetn(aresetn), .s_meta(rdma_sq_int), .m_meta(rdma_sq));
-    meta_reg #(.DATA_BITS($bits(ack_t)) inst_reg_rdma_cq (.aclk(aclk), .aresetn(aresetn), .s_meta(rdma_cq), .m_meta(rdma_cq_int));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_rdma_rq_rd (.aclk(aclk), .aresetn(aresetn), .s_meta(rdma_rq_rd), .m_meta(rdma_rq_rd_int));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_rdma_rq_wr (.aclk(aclk), .aresetn(aresetn), .s_meta(rdma_rq_wr), .m_meta(rdma_rq_wr_int));
+    meta_reg #(.DATA_BITS($bits(dreq_t)) inst_reg_rdma_sq (.aclk(aclk), .aresetn(aresetn_r), .s_meta(rdma_sq_int), .m_meta(rdma_sq));
+    meta_reg #(.DATA_BITS($bits(ack_t)) inst_reg_rdma_cq (.aclk(aclk), .aresetn(aresetn_r), .s_meta(rdma_cq), .m_meta(rdma_cq_int));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_rdma_rq_rd (.aclk(aclk), .aresetn(aresetn_r), .s_meta(rdma_rq_rd), .m_meta(rdma_rq_rd_int));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_rdma_rq_wr (.aclk(aclk), .aresetn(aresetn_r), .s_meta(rdma_rq_wr), .m_meta(rdma_rq_wr_int));
 
 {% endif %}
 {% if cnfg.en_tcp %}
     // TCP desc
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_tcp_sq (.aclk(aclk), .aresetn(aresetn), .s_meta(tcp_sq_int), .m_meta(tcp_sq));
-    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_tcp_rq (.aclk(aclk), .aresetn(aresetn), .s_meta(tcp_rq), .m_meta(tcp_rq_int));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_tcp_sq (.aclk(aclk), .aresetn(aresetn_r), .s_meta(tcp_sq_int), .m_meta(tcp_sq));
+    meta_reg #(.DATA_BITS($bits(req_t)) inst_reg_tcp_rq (.aclk(aclk), .aresetn(aresetn_r), .s_meta(tcp_rq), .m_meta(tcp_rq_int));
 
 {% endif %}
 {% if cnfg.en_strm %}
     // AXIS host
-    axis_reg inst_reg_axis_host_sink (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_host_sink), .m_axis(axis_host_sink_int));
-    axis_reg inst_reg_axis_host_src  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_host_src_int), .m_axis(axis_host_src));
+    axis_reg inst_reg_axis_host_sink (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_host_sink), .m_axis(axis_host_sink_int));
+    axis_reg inst_reg_axis_host_src  (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_host_src_int), .m_axis(axis_host_src));
 
 {% endif %}
 {% if cnfg.en_mem %}
     // AXIS card
 {% for i in range(0, cnfg.n_card_axi) %} 
-    axis_reg inst_reg_axis_card_sink (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_card_sink[{{ i }}]), .m_axis(axis_card_sink_int[{{ i }}]));
-    axis_reg inst_reg_axis_card_src  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_card_src_int[{{ i }}]), .m_axis(axis_card_src[{{ i }}]));
+    axis_reg inst_reg_axis_card_sink (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_card_sink[{{ i }}]), .m_axis(axis_card_sink_int[{{ i }}]));
+    axis_reg inst_reg_axis_card_src  (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_card_src_int[{{ i }}]), .m_axis(axis_card_src[{{ i }}]));
 {% endfor %}
 
 {% endif %}
 {% if cnfg.en_mem and cnfg.n_direct_rd > 0 %}
     // AXI direct read (Ryloth)
 {% for i in range(0, cnfg.n_direct_rd) %}
-    axi_rd_reg #(.ADDR_BITS(DRD_ADDR_BITS), .DATA_BITS(DRD_DATA_BITS)) inst_reg_axi_drd_{{ i }} (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_drd_int[{{ i }}]), .m_axi(axi_drd[{{ i }}]));
+    axi_rd_reg #(.ADDR_BITS(DRD_ADDR_BITS), .DATA_BITS(DRD_DATA_BITS)) inst_reg_axi_drd_{{ i }} (.aclk(aclk), .aresetn(aresetn_r), .s_axi(axi_drd_int[{{ i }}]), .m_axi(axi_drd[{{ i }}]));
 {% endfor %}
 
 {% endif %}
 {% if cnfg.en_rdma %}
     // AXIS rdma
-    axis_reg inst_reg_axis_rdma_sink (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_rdma_sink), .m_axis(axis_rdma_sink_int));
-    axis_reg inst_reg_axis_rdma_src_req  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_rdma_src_req_int), .m_axis(axis_rdma_src_req));
-    axis_reg inst_reg_axis_rdma_src_rsp  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_rdma_src_rsp_int), .m_axis(axis_rdma_src_rsp));
+    axis_reg inst_reg_axis_rdma_sink (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_rdma_sink), .m_axis(axis_rdma_sink_int));
+    axis_reg inst_reg_axis_rdma_src_req  (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_rdma_src_req_int), .m_axis(axis_rdma_src_req));
+    axis_reg inst_reg_axis_rdma_src_rsp  (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_rdma_src_rsp_int), .m_axis(axis_rdma_src_rsp));
 
 {% endif %}
 {% if cnfg.en_tcp %}
     // AXIS tcp
-    axis_reg inst_reg_axis_tcp_sink (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_tcp_sink), .m_axis(axis_tcp_sink_int));
-    axis_reg inst_reg_axis_tcp_src  (.aclk(aclk), .aresetn(aresetn), .s_axis(axis_tcp_src_int), .m_axis(axis_tcp_src));
+    axis_reg inst_reg_axis_tcp_sink (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_tcp_sink), .m_axis(axis_tcp_sink_int));
+    axis_reg inst_reg_axis_tcp_src  (.aclk(aclk), .aresetn(aresetn_r), .s_axis(axis_tcp_src_int), .m_axis(axis_tcp_src));
 
 {% endif %}
 
@@ -660,7 +667,7 @@ module design_user_wrapper_{{ c_reg }} (
         .host_remote_wr(host_remote_sq_wr),
 {% endif %}
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     // User request mux
@@ -676,13 +683,13 @@ module design_user_wrapper_{{ c_reg }} (
         .user_remote_wr(user_remote_sq_wr),
 {% endif %}
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     // Host user arbiters
     req_arb_2_1 inst_arb_local_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req_0(user_local_sq_rd),
         .s_req_1(host_local_sq_rd),
         .m_req(local_sq_rd)
@@ -690,7 +697,7 @@ module design_user_wrapper_{{ c_reg }} (
 
     req_arb_2_1 inst_arb_local_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req_0(user_local_sq_wr),
         .s_req_1(host_local_sq_wr),
         .m_req(local_sq_wr)
@@ -699,7 +706,7 @@ module design_user_wrapper_{{ c_reg }} (
 {% if cnfg.en_net %}
     dreq_arb_2_1 inst_arb_remote_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req_0(user_remote_sq_rd),
         .s_req_1(host_remote_sq_rd),
         .m_req(remote_sq_rd)
@@ -707,7 +714,7 @@ module design_user_wrapper_{{ c_reg }} (
 
     dreq_arb_2_1 inst_arb_remote_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req_0(user_remote_sq_wr),
         .s_req_1(host_remote_sq_wr),
         .m_req(remote_sq_wr)
@@ -738,7 +745,7 @@ module design_user_wrapper_{{ c_reg }} (
         .m_req_0(local_sq_rd_host),
         .m_req_1(local_sq_rd_card),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     req_mux_stream_1_2 inst_stream_mux_wr (
@@ -746,14 +753,14 @@ module design_user_wrapper_{{ c_reg }} (
         .m_req_0(local_sq_wr_host),
         .m_req_1(local_sq_wr_card),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     local_credits_host_rd #(
         .N_DESTS(N_STRM_AXI)
     ) inst_local_credits_host_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_rd_host),
         .m_req(local_cred_rd_host),
         .s_axis(axis_host_sink_int),
@@ -764,7 +771,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_STRM_AXI)
     ) inst_local_credits_host_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_wr_host),
         .m_req(local_cred_wr_host),
         .s_axis(axis_host_send_int),
@@ -775,7 +782,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_CARD_AXI)
     ) inst_local_credits_card_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_rd_card),
         .m_req(local_cred_rd_card),
         .s_axis(axis_card_sink_int),
@@ -786,7 +793,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_CARD_AXI)  
     ) inst_local_credits_card_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_wr_card),
         .m_req(local_cred_wr_card),
         .s_axis(axis_card_send_int),
@@ -798,7 +805,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_req_1(local_cred_rd_card),
         .m_req(bpss_rd_req_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     req_arb_2_1 inst_stream_arb_wr (
@@ -806,7 +813,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_req_1(local_cred_wr_card),
         .m_req(bpss_wr_req_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
 {% elif cnfg.en_strm %}
@@ -817,7 +824,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_STRM_AXI)
     ) inst_local_credits_host_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_rd_host),
         .m_req(local_cred_rd_host),
         .s_axis(axis_host_sink_int),
@@ -828,7 +835,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_STRM_AXI)
     ) inst_local_credits_host_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_wr_host),
         .m_req(local_cred_wr_host),
         .s_axis(axis_host_send_int),
@@ -846,7 +853,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_CARD_AXI)
     ) inst_local_credits_card_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_rd_card),
         .m_req(local_cred_rd_card),
         .s_axis(axis_card_sink_int),
@@ -857,7 +864,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_CARD_AXI)
     ) inst_local_credits_card_wr (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(local_sq_wr_card),
         .m_req(local_cred_wr_card),
         .s_axis(axis_card_send_int),
@@ -905,14 +912,14 @@ module design_user_wrapper_{{ c_reg }} (
         .m_req_0(remote_sq_wr_rdma),
         .m_req_2(remote_sq_wr_tcp),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     remote_credits_rd #(
         .N_DESTS(N_RDMA_AXI)  
     ) inst_remote_credits_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_rd),
         .m_req(remote_cred_rd_rdma),
         .s_rq(rdma_rq_wr_int),
@@ -926,7 +933,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_RDMA_AXI)  
     ) inst_remote_credits_wr_rdma (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_wr_rdma),
         .m_req(remote_cred_wr_rdma),
         .s_axis(axis_rdma_send_req_int),
@@ -937,7 +944,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_RDMA_AXI)
     ) inst_remote_resp_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_rq(rdma_rq_rd),
         .m_rq(user_rq_rd_int),
         .s_axis(axis_rdma_send_rsp_int),
@@ -949,14 +956,14 @@ module design_user_wrapper_{{ c_reg }} (
         .s_req_1(remote_cred_wr_rdma),
         .m_req(rdma_sq_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     remote_credits_wr_tcp #(
         .N_DESTS(N_TCP_AXI)  
     ) inst_remote_credits_wr_tcp (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_wr_tcp),
         .m_req(tcp_sq_int),
         .s_axis(axis_tcp_send_int),
@@ -969,7 +976,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_axis(axis_tcp_sink_int),
         .m_axis(axis_tcp_recv_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
     req_arb_2_1 inst_rq_arbiter (
@@ -977,7 +984,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_req_1(tcp_rq_wr_int),
         .m_req(user_rq_wr_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
 {% elif cnfg.en_rdma %}
@@ -987,7 +994,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_RDMA_AXI)  
     ) inst_remote_credits_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_rd),
         .m_req(remote_cred_rd_rdma),
         .s_rq(rdma_rq_wr_int),
@@ -1002,7 +1009,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_RDMA_AXI)  
     ) inst_remote_credits_wr_rdma (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_wr_rdma),
         .m_req(remote_cred_wr_rdma),
         .s_axis(axis_rdma_send_req_int),
@@ -1013,7 +1020,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_RDMA_AXI)
     ) inst_remote_resp_rd (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_rq(rdma_rq_rd),
         .m_rq(user_rq_rd_int),
         .s_axis(axis_rdma_send_rsp_int),
@@ -1025,7 +1032,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_req_1(remote_cred_wr_rdma),
         .m_req(rdma_sq_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
 {% elif cnfg.en_tcp %}
@@ -1036,7 +1043,7 @@ module design_user_wrapper_{{ c_reg }} (
         .N_DESTS(N_TCP_AXI)  
     ) inst_remote_credits_wr_tcp (
         .aclk(aclk),
-        .aresetn(aresetn),
+        .aresetn(aresetn_r),
         .s_req(remote_sq_wr_tcp),
         .m_req(tcp_sq_int),
         .s_axis(axis_tcp_send_int),
@@ -1049,7 +1056,7 @@ module design_user_wrapper_{{ c_reg }} (
         .s_axis(axis_tcp_sink_int),
         .m_axis(axis_tcp_recv_int),
         .aclk(aclk),
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
     `META_ASSIGN(tcp_rq_wr_int, user_rq_wr_int)
 
@@ -1071,7 +1078,7 @@ module design_user_wrapper_{{ c_reg }} (
         .m_cq_rd(user_cq_rd_int),
         .m_cq_wr(user_cq_wr_int),
         .aclk(aclk),                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-        .aresetn(aresetn)
+        .aresetn(aresetn_r)
     );
 
 {% else %}
@@ -1123,7 +1130,7 @@ module design_user_wrapper_{{ c_reg }} (
         .filter_config(filter_config),
     {% endif %}
         .aclk(aclk),
-	    .aresetn(aresetn)
+	    .aresetn(aresetn_r)
 	);
 
     //
