@@ -117,6 +117,14 @@ static int run(int argc, char *argv[]) {
               << " MiB, request " << (len >> 10) << " KiB x " << reps << " per stream, " << (advance ? "sequential" : "same address")
               << ", placement " << (windows ? (group == 1 ? std::string("window i+1") : "window i/" + std::to_string(group) + "+1") : std::string("first-free")) << std::endl;
 
+    // card window of stream i: i / group + 1. B16 (drd16w shell, 10/26: 16 direct ports): direct ports 14 and 15 (the last
+    // two streams) read windows 0 and 1, which they share with Coyote's memory paths through the shell's drd_share
+    const bool b16 = (n_direct == 16);
+    auto win_of = [&](unsigned i) -> unsigned {
+        if (b16 && i >= first_direct + 14) return i - (first_direct + 14);
+        return i / group + 1;
+    };
+    if (b16) std::cout << "B16 shell: direct ports 14 and 15 (streams " << first_direct + 14 << ", " << first_direct + 15 << ") read windows 0 and 1" << std::endl;
     // one region per driven stream, migrated to the card (needs region / 2 MiB free hugepages per stream)
     std::vector<char*> regions(S);
     for (unsigned k = 0; k < S; k++) {
@@ -124,7 +132,7 @@ static int run(int argc, char *argv[]) {
         coyote::CoyoteAlloc a;
         a.alloc = coyote::CoyoteAllocType::HPF;
         a.size = static_cast<uint32_t>(region);
-        a.mem_block = windows ? static_cast<int32_t>(i / group + 1) : -1;
+        a.mem_block = windows ? static_cast<int32_t>(win_of(i)) : -1;
         regions[k] = static_cast<char*>(t.getMem(std::move(a)));
         if (!regions[k]) { std::cerr << "allocation failed for stream " << i << std::endl; return 1; }
         uint64_t *w = reinterpret_cast<uint64_t*>(regions[k]);
@@ -151,8 +159,8 @@ static int run(int argc, char *argv[]) {
         std::vector<uint64_t> pg = t.getCardPaddr(regions[k], huge, (region + 4095) / 4096);
         const uint64_t pgsz = 4096ull;
         if (pg.empty() || pg.size() * pgsz < region) { std::cerr << "stream " << i << ": only " << pg.size() << " pages mapped" << std::endl; return 4; }
-        if (windows && (pg[0] >> 30) != i / group + 1) {
-            std::cerr << "stream " << i << ": region placed in card window " << (pg[0] >> 30) << ", expected " << i / group + 1
+        if (windows && (pg[0] >> 30) != win_of(i)) {
+            std::cerr << "stream " << i << ": region placed in card window " << (pg[0] >> 30) << ", expected " << win_of(i)
                       << " (host library before b6966163 or driver before 3b34e8b1?)" << std::endl;
             return 4;
         }

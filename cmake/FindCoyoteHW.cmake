@@ -105,6 +105,10 @@ set(DRD_HCLK 0 CACHE STRING "Direct read ports keep a clock converter to HCLK (f
 # Ryloth scaling step B (2026-10-22): 1024-bit direct ports at ACLK; a gearbox in the dynamic layer turns each into
 # 512 bits at HCLK (2 x ACLK), so the HBM side runs twice as fast as the user side and the port moves twice the bytes.
 set(DRD_WIDE 0 CACHE STRING "Direct read ports are 1024 bits at ACLK, 512 bits at HCLK behind a gearbox (needs HCLK_F = 2 x ACLK_F)")
+# Ryloth B16 (2026-10-26): 16 direct read ports; ports 14 and 15 share the HBM ports of Coyote's two memory paths
+# (window 0: the host-transfer path, window 1: the card stream) through a time-multiplexed switch (hw/hdl/shell/drd_share.v)
+set(DRD_SHARE 0 CACHE STRING "Direct ports 14/15 share Coyote's HBM ports of windows 0/1 (needs N_DIRECT_RD=16, N_CARD_AXI=1, DRD_WIDE=1)")
+set(N_DRD_SHARE 0)   # derived below; stays 0 for app builds against shells exported before B16
 
 set(DATA_DEST_BITS 4 CACHE STRING "Number of bits used to address the coyote stream index.")
 set(VADDR_BITS 48 CACHE STRING "Bits of a virtual address used e.g. in the MMU.")
@@ -521,6 +525,16 @@ macro(validation_checks_hw)
         endif()
         if(EN_TCP OR EN_RDMA)
             MATH(EXPR N_MEM_CHAN "${N_NET_CHAN} + ${N_MEM_CHAN}")
+        endif()
+        set(N_DRD_SHARE 0)
+        if(DRD_SHARE)
+            if(NOT N_DIRECT_RD EQUAL 16 OR NOT N_CARD_AXI EQUAL 1 OR NOT DRD_WIDE OR EN_TCP OR EN_RDMA)
+                message(FATAL_ERROR "DRD_SHARE needs N_DIRECT_RD=16, N_CARD_AXI=1, DRD_WIDE=1 and no network stack.")
+            endif()
+            # 18 memory masters (shell DMA, card stream, 16 direct ports) on 16 HBM channels: the last two direct ports
+            # share channels 0 and 1
+            MATH(EXPR N_DRD_SHARE "${N_MEM_CHAN} - 16")
+            set(N_MEM_CHAN 16)
         endif()
         if(N_DIRECT_RD GREATER 0)
             # the direct ports run on ACLK with no user-clock crossing, and use 34-bit (16 GiB) card addresses

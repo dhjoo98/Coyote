@@ -83,6 +83,8 @@ set cfg(hbm_direct)             ${HBM_DIRECT}
 set cfg(n_direct_rd)            ${N_DIRECT_RD}
 set cfg(drd_hclk)               ${DRD_HCLK}
 set cfg(drd_wide)               ${DRD_WIDE}
+set cfg(drd_share)              ${DRD_SHARE}
+set cfg(n_drd_share)            ${N_DRD_SHARE}
 set cfg(n_mem_chan)             ${N_MEM_CHAN}
 set cfg(n_ddr_chan)             ${N_DDR_CHAN}
 set cfg(n_tcp_chan)             ${N_TCP_CHAN}

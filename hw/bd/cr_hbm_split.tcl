@@ -215,6 +215,15 @@ proc create_hier_cell_path { parentCell nameHier } {
 proc cr_bd_design_hbm { parentCell } {
   upvar #0 cfg cnfg
 
+  # Ryloth B16 (2026-10-26): with drd_share the last n_drd_share direct ports have no HBM channel of their own; they
+  # share channels 0.. (Coyote's host-transfer path and card stream) through drd_share switches. drd_own = direct ports
+  # with their own channel (the last drd_own of the n_mem_chan channels, as before).
+  set drd_share 0
+  set n_share 0
+  if {[info exists cnfg(drd_share)] && $cnfg(drd_share) eq 1} { set drd_share 1; set n_share $cnfg(n_drd_share) }
+  set drd_own 0
+  if {[info exists cnfg(n_direct_rd)]} { set drd_own [expr {$cnfg(n_direct_rd) - $n_share}] }
+
   # CHANGE DESIGN NAME HERE
   set design_name design_hbm
 
@@ -327,6 +336,18 @@ proc cr_bd_design_hbm { parentCell } {
       eval $cmd
    }
 
+   # Ryloth B16: the direct ports sharing channels 0.. (AXI4, 512 bits on HCLK, like the other direct ports)
+   for {set i $cnfg(n_mem_chan)}  {$i < $cnfg(n_mem_chan) + $n_share} {incr i} {
+      set axi_sh [ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 axi_hbm_in_$i ]
+      set_property -dict [ list CONFIG.ADDR_WIDTH {64} CONFIG.ARUSER_WIDTH {0} CONFIG.AWUSER_WIDTH {0} CONFIG.BUSER_WIDTH {0} \
+         CONFIG.DATA_WIDTH {512} CONFIG.HAS_BRESP {1} CONFIG.HAS_BURST {1} CONFIG.HAS_CACHE {1} CONFIG.HAS_LOCK {1} \
+         CONFIG.HAS_PROT {1} CONFIG.HAS_QOS {0} CONFIG.HAS_REGION {0} CONFIG.HAS_RRESP {1} CONFIG.HAS_WSTRB {1} \
+         CONFIG.ID_WIDTH {1} CONFIG.MAX_BURST_LENGTH {64} CONFIG.NUM_READ_OUTSTANDING {8} CONFIG.NUM_READ_THREADS {8} \
+         CONFIG.NUM_WRITE_OUTSTANDING {8} CONFIG.NUM_WRITE_THREADS {8} CONFIG.PROTOCOL {AXI4} CONFIG.READ_WRITE_MODE {READ_WRITE} \
+         CONFIG.RUSER_BITS_PER_BYTE {0} CONFIG.RUSER_WIDTH {0} CONFIG.SUPPORTS_NARROW_BURST {0} CONFIG.WUSER_BITS_PER_BYTE {0} \
+         CONFIG.WUSER_WIDTH {0} ] $axi_sh
+   }
+
    for {set i 0}  {$i < 2 * (16 - $cnfg(n_mem_chan))} {incr i} {   
       set cmd "set axi_toff_in_$i \[ create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 axi_toff_in_$i ]
                set_property -dict \[ list \
@@ -366,10 +387,10 @@ proc cr_bd_design_hbm { parentCell } {
   set drd_wide_bd 0
   if {[info exists cnfg(drd_wide)] && $cnfg(drd_wide) eq 1 && [info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0} { set drd_wide_bd 1 }
   set drd_first_bd $cnfg(n_mem_chan)
-  if {$drd_wide_bd} { set drd_first_bd [expr {$cnfg(n_mem_chan) - $cnfg(n_direct_rd)}] }
+  if {$drd_wide_bd} { set drd_first_bd [expr {$cnfg(n_mem_chan) - $drd_own}] }
   set hclk_busif {}
   for {set i 0}  {$i < 2 * (16 - $cnfg(n_mem_chan))} {incr i} { lappend hclk_busif "axi_toff_in_$i" }
-  for {set i $drd_first_bd} {$i < $cnfg(n_mem_chan)} {incr i} { lappend hclk_busif "axi_hbm_in_$i" }
+  for {set i $drd_first_bd} {$i < $cnfg(n_mem_chan) + $n_share} {incr i} { lappend hclk_busif "axi_hbm_in_$i" }
 
   # Internal
   set cmd "set hclk_int \[ create_bd_port -dir O -type clk hclk_int ]
@@ -640,7 +661,7 @@ proc cr_bd_design_hbm { parentCell } {
 # Combiner
 # Ryloth direct read ports: the last n_direct_rd memory ports (slot p of both stacks) get the direct path
 set drd_n 0
-if {[info exists cnfg(n_direct_rd)]} { set drd_n $cnfg(n_direct_rd) }
+if {[info exists cnfg(n_direct_rd)]} { set drd_n $drd_own }
 set drd_hclk 0
 if {[info exists cnfg(drd_hclk)]} { set drd_hclk $cnfg(drd_hclk) }
 set drd_first [expr {$cnfg(n_mem_chan) - $drd_n}]
@@ -662,7 +683,7 @@ if {$drd_n > 0 && $drd_wide eq 1} {
 }
 for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {   
    # Ryloth direct read ports: their width split is the read-only hbm_wide_rd (no write or response FIFOs)
-   if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && $i >= [expr {$cnfg(n_mem_chan) - $cnfg(n_direct_rd)}]} {
+   if {[info exists cnfg(n_direct_rd)] && $cnfg(n_direct_rd) > 0 && $i >= [expr {$cnfg(n_mem_chan) - $drd_own}]} {
       create_bd_cell -type module -reference hbm_wide_rd hbm_wide_$i
    } else {
       create_bd_cell -type module -reference hbm_wide hbm_wide_$i   
@@ -709,19 +730,23 @@ for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {
 
 if {$cnfg(fdev) eq "u55c"} {
    for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {  
+      if {$drd_share && $i < $n_share} { continue }
       set cmd "[format "connect_bd_intf_net \[get_bd_intf_pins hbm_inst/SAXI_%02d_8HI] -boundary_type upper \[get_bd_intf_pins path_$i/M_AXI]" $i]"
       eval $cmd
    }
    for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {  
+      if {$drd_share && $i < $n_share} { continue }
       set cmd "[format "connect_bd_intf_net \[get_bd_intf_pins hbm_inst/SAXI_%02d_8HI] -boundary_type upper \[get_bd_intf_pins path_%d/M_AXI]" [expr {$i + 16}] [expr {$i + $cnfg(n_mem_chan)}]]"
       eval $cmd
    }
 } else {
    for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {  
+      if {$drd_share && $i < $n_share} { continue }
       set cmd "[format "connect_bd_intf_net \[get_bd_intf_pins hbm_inst/SAXI_%02d] -boundary_type upper \[get_bd_intf_pins path_$i/M_AXI]" $i]"
       eval $cmd
    }
    for {set i 0}  {$i < $cnfg(n_mem_chan)} {incr i} {  
+      if {$drd_share && $i < $n_share} { continue }
       set cmd "[format "connect_bd_intf_net \[get_bd_intf_pins hbm_inst/SAXI_%02d] -boundary_type upper \[get_bd_intf_pins path_%d/M_AXI]" [expr {$i + 16}] [expr {$i + $cnfg(n_mem_chan)}]]"
       eval $cmd
    }
@@ -750,6 +775,58 @@ if {$cnfg(fdev) eq "u55c"} {
      connect_bd_intf_net -boundary_type upper [get_bd_intf_pins path_$nn/S_AXI] [get_bd_intf_pins hbm_wide_$i/m_axi_1]
      connect_bd_intf_net [get_bd_intf_ports axi_hbm_in_$i] [get_bd_intf_pins hbm_wide_$i/s_axi]
  }
+
+ # Ryloth B16 (2026-10-26): direct port n_mem_chan + k (k < n_share) shares channel k. Per stack half h (slot k + 16 h):
+ #   Coyote side: path_(k + h n_mem_chan) (RAMA on the 225 MHz card clock) -> clock converter to HCLK -> drd_share/s_axi_c
+ #   direct side: hbm_wide_rd -> path_drd on HCLK (as every direct port)                       -> drd_share/s_axi_d
+ #   drd_share/m_axi -> fully registered slice on HCLK -> the HBM port, now clocked by HCLK
+ if {$drd_share} {
+    if {!$card_clk_225} { error "B16 (drd_share) expects the wide direct ports with Coyote's paths on the 225 MHz card clock" }
+    for {set k 0} {$k < $n_share} {incr k} {
+       set ch [expr {$cnfg(n_mem_chan) + $k}]
+       create_bd_cell -type module -reference hbm_wide_rd hbm_wide_$ch
+       set cmd [format "set_property -dict \[list CONFIG.HBM_CHAN_SIZE {$cnfg(hbm_size)}] \[get_bd_cells hbm_wide_$ch]"]
+       eval $cmd
+       connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins hbm_wide_$ch/aclk]
+       connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins hbm_wide_$ch/aresetn]
+       connect_bd_intf_net [get_bd_intf_ports axi_hbm_in_$ch] [get_bd_intf_pins hbm_wide_$ch/s_axi]
+       for {set h 0} {$h < 2} {incr h} {
+          set slot [expr {$k + 16 * $h}]
+          set pd path_sh_${k}_${h}
+          create_hier_cell_path_drd [current_bd_instance .] $pd 0 1
+          connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins $pd/aclk] [get_bd_pins $pd/hclk]
+          connect_bd_net [get_bd_pins drd_fabric_rst/peripheral_aresetn] [get_bd_pins $pd/aresetn]
+          connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins $pd/hresetn]
+          connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $pd/S_AXI] [get_bd_intf_pins hbm_wide_$ch/m_axi_$h]
+          set pc path_[expr {$k + $h * $cnfg(n_mem_chan)}]
+          set cc [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_clock_converter:2.1 cc_sh_${k}_${h} ]
+          # ID_WIDTH must be set: left to propagation from the hierarchical path pin it became 1, and the converter kept
+          # only bit 0 of RAMA's 6-bit IDs, so RAMA never matched a write response (drd16w board, 10/26 15:21: the first
+          # host-to-card offload hung with 32 commands outstanding). RAMA uses all 6 HBM ID bits.
+          set_property -dict [ list CONFIG.ID_WIDTH {6} ] $cc
+          connect_bd_intf_net -boundary_type upper [get_bd_intf_pins $pc/M_AXI] [get_bd_intf_pins cc_sh_${k}_${h}/S_AXI]
+          connect_bd_net [get_bd_pins clk_wiz_0/clk_out2] [get_bd_pins cc_sh_${k}_${h}/s_axi_aclk]
+          connect_bd_net [get_bd_pins hbm_reset_sync_card/interconnect_aresetn] [get_bd_pins cc_sh_${k}_${h}/s_axi_aresetn]
+          connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins cc_sh_${k}_${h}/m_axi_aclk]
+          connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins cc_sh_${k}_${h}/m_axi_aresetn]
+          create_bd_cell -type module -reference drd_share share_${k}_${h}
+          connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins share_${k}_${h}/aclk]
+          connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins share_${k}_${h}/aresetn]
+          connect_bd_intf_net [get_bd_intf_pins cc_sh_${k}_${h}/M_AXI] [get_bd_intf_pins share_${k}_${h}/s_axi_c]
+          connect_bd_intf_net [get_bd_intf_pins $pd/M_AXI] [get_bd_intf_pins share_${k}_${h}/s_axi_d]
+          set rs [ create_bd_cell -type ip -vlnv xilinx.com:ip:axi_register_slice:2.1 rs_sh_${k}_${h} ]
+          set_property -dict [ list CONFIG.REG_AR {1} CONFIG.REG_AW {1} CONFIG.REG_W {1} CONFIG.REG_R {1} CONFIG.REG_B {1} ] $rs
+          connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] [get_bd_pins rs_sh_${k}_${h}/aclk]
+          connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] [get_bd_pins rs_sh_${k}_${h}/aresetn]
+          connect_bd_intf_net [get_bd_intf_pins share_${k}_${h}/m_axi] [get_bd_intf_pins rs_sh_${k}_${h}/S_AXI]
+          if {$cnfg(fdev) eq "u55c"} {
+             connect_bd_intf_net -boundary_type upper [get_bd_intf_pins [format "hbm_inst/SAXI_%02d_8HI" $slot]] [get_bd_intf_pins rs_sh_${k}_${h}/M_AXI]
+          } else {
+             connect_bd_intf_net -boundary_type upper [get_bd_intf_pins [format "hbm_inst/SAXI_%02d" $slot]] [get_bd_intf_pins rs_sh_${k}_${h}/M_AXI]
+          }
+       }
+    }
+ }
  
  # Create instance: init_logic
   create_hier_cell_init_logic [current_bd_instance .] init_logic
@@ -771,7 +848,7 @@ if {$cnfg(fdev) eq "u55c"} {
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ACLK" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } elseif {$card_clk_225 && $p < $drd_first} { lappend card_pins $pin } else { lappend hclk_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend aclk_pins $pin } elseif {$card_clk_225 && $p < $drd_first && !($drd_share && $p < $n_share)} { lappend card_pins $pin } else { lappend hclk_pins $pin }
  }
  connect_bd_net [get_bd_pins clk_wiz_0/clk_out1] {*}$hclk_pins
  if {[llength $card_pins] > 0} {
@@ -797,7 +874,7 @@ if {$cnfg(fdev) eq "u55c"} {
  for {set s 0} {$s < 32} {incr s} {
     set p [expr {$s % 16}]
     set pin [get_bd_pins [format "hbm_inst/AXI_%02d_ARESET_N" $s]]
-    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } elseif {$card_clk_225 && $p < $drd_first} { lappend crst_pins $pin } else { lappend hrst_pins $pin }
+    if {$drd_n > 0 && $drd_hclk ne 1 && $drd_wide ne 1 && $p >= $drd_first && $p < $cnfg(n_mem_chan)} { lappend arst_pins $pin } elseif {$card_clk_225 && $p < $drd_first && !($drd_share && $p < $n_share)} { lappend crst_pins $pin } else { lappend hrst_pins $pin }
  }
  connect_bd_net [get_bd_pins hbm_reset_sync_SLR0/interconnect_aresetn] {*}$hrst_pins
  if {[llength $crst_pins] > 0} { connect_bd_net [get_bd_pins hbm_reset_sync_card/interconnect_aresetn] {*}$crst_pins }

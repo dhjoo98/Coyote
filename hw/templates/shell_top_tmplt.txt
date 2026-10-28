@@ -820,7 +820,7 @@ module shell_top (
     // MEMORY STACK
     // ================-----------------------------------------------------------------
     
-    AXI4 #(.AXI4_DATA_BITS(AXI_DDR_BITS)) axi_ddr_in [N_MEM_CHAN] ();
+    AXI4 #(.AXI4_DATA_BITS(AXI_DDR_BITS)) axi_ddr_in [N_MEM_CHAN+N_DRD_SHARE] ();   // Ryloth B16: + the direct ports sharing channels 0/1
 	
 {% if cnfg.en_tcp and cnfg.en_rdma %}
     axi_stripe (.aclk(aclk), .aresetn(aresetn), .s_axi(axi_ddr_tcp),  .m_axi(axi_ddr_in[0]));
@@ -1211,7 +1211,7 @@ module shell_top (
     // ================-----------------------------------------------------------------
 
     design_hbm inst_int_hbm (
-    {% for i in range(0, cnfg.n_mem_chan) %}
+    {% for i in range(0, cnfg.n_mem_chan + cnfg.n_drd_share) %}
         .axi_hbm_in_{{ i }}_araddr(axi_ddr_in[{{ i }}].araddr),
         .axi_hbm_in_{{ i }}_arburst(axi_ddr_in[{{ i }}].arburst),
         .axi_hbm_in_{{ i }}_arcache(axi_ddr_in[{{ i }}].arcache),

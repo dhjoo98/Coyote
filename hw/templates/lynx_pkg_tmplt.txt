@@ -375,6 +375,7 @@ package lynxTypes;
     localparam integer N_DDR_CHAN_BITS = clog2s({{ cnfg.n_ddr_chan }});
     localparam integer N_MEM_CHAN = {{ cnfg.n_mem_chan }};
     localparam integer N_MEM_CHAN_BITS = clog2s({{ cnfg.n_mem_chan }});
+    localparam integer N_DRD_SHARE = {{ cnfg.n_drd_share }}; // Ryloth B16: direct ports sharing the HBM channels of Coyote's memory paths
     localparam integer DDR_FRAG_SIZE = {{ cnfg.ddr_frag }};
     localparam integer PR_FLOW = {{ cnfg.en_pr }};
     localparam integer RECONFIG_EOS_TIME = {{ cnfg.eos_time }};
